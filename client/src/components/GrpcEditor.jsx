@@ -332,7 +332,7 @@ export default function GrpcEditor({
                 <label><span>Service</span><input value={item.serviceName || ''} onChange={(e) => patch((target) => { target.serviceName = e.target.value; })} /></label>
               </div>
             )}
-            <p className="hint">当前方法类型：<strong>{methodType(selectedMethod)}</strong>。方法在上方 RPC 路径栏选择或手动输入。</p>
+            <p className="hint">当前方法类型：<strong>{methodType(selectedMethod)}</strong>。方法在上方 RPC 路径栏选择。</p>
           </section>
           <section>
             <h4>说明</h4>

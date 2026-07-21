@@ -174,6 +174,8 @@ export default function App() {
   const [selectedClientApiId, setSelectedClientApiId] = useState(null);
   const [selectedGrpcMockId, setSelectedGrpcMockId] = useState(null);
   const [selectedGrpcClientId, setSelectedGrpcClientId] = useState(null);
+  const lastGrpcMockIdRef = useRef(null);
+  const lastGrpcClientIdRef = useRef(null);
   const [grpcOpenVersion, setGrpcOpenVersion] = useState(0);
   const [draft, setDraft] = useState(null);
   const [requests, setRequests] = useState([]);
@@ -687,6 +689,8 @@ export default function App() {
   function selectItem(type, itemId) {
     setNavApiType(type);
     if (type.startsWith('grpc-') && itemId) setGrpcOpenVersion((value) => value + 1);
+    if (type === 'grpc-mock') lastGrpcMockIdRef.current = itemId;
+    if (type === 'grpc-client') lastGrpcClientIdRef.current = itemId;
     setSelectedApiId(type === 'api' ? itemId : null);
     setSelectedClientApiId(type === 'client-api' ? itemId : null);
     setSelectedGrpcMockId(type === 'grpc-mock' ? itemId : null);
@@ -1145,12 +1149,14 @@ export default function App() {
       const items = nextType.startsWith('grpc-') ? sortGrpcMethods(targetItems) : targetItems;
       const currentId = nextType === 'api' ? selectedApiId
         : nextType === 'client-api' ? selectedClientApiId
-          : nextType === 'grpc-mock' ? selectedGrpcMockId : selectedGrpcClientId;
+          : nextType === 'grpc-mock'
+            ? (selectedGrpcMockId || lastGrpcMockIdRef.current)
+            : (selectedGrpcClientId || lastGrpcClientIdRef.current);
       const sourceGrpcItem = type === 'grpc-mock'
         ? selectedGrpcMock
         : type === 'grpc-client' ? selectedGrpcClient : null;
       const matchingGrpcItem = type.startsWith('grpc-') && nextType.startsWith('grpc-')
-        ? findMatchingGrpcItem(items, sourceGrpcItem)
+        ? findMatchingGrpcItem(items, sourceGrpcItem, currentId)
         : null;
       const nextId = matchingGrpcItem?.id
         || (items.some((item) => item.id === currentId) ? currentId : items[0]?.id)

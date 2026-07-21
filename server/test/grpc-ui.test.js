@@ -67,3 +67,14 @@ test('findMatchingGrpcItem does not guess when a method name is ambiguous', () =
 
   assert.equal(findMatchingGrpcItem(clientItems, { methodName: 'Sync' }), null);
 });
+
+test('findMatchingGrpcItem restores the preferred duplicate method item', () => {
+  const clientItems = [
+    { id: 'client-first', packageName: 'shop', serviceName: 'Order', methodName: 'Sync', request: '{"value":1}' },
+    { id: 'client-saved', packageName: 'shop', serviceName: 'Order', methodName: 'Sync', request: '{"value":2}' },
+  ];
+  const serverItem = { packageName: 'shop', serviceName: 'Order', methodName: 'Sync' };
+
+  assert.equal(findMatchingGrpcItem(clientItems, serverItem, 'client-saved')?.id, 'client-saved');
+  assert.equal(findMatchingGrpcItem(clientItems, serverItem, 'client-saved')?.request, '{"value":2}');
+});

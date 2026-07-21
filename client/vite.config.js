@@ -4,6 +4,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const controlPort = Number(process.env.CONTROL_PORT) || 3888;
 
 export default defineConfig({
   root: __dirname,
@@ -16,7 +17,7 @@ export default defineConfig({
     port: 5173,
     proxy: {
       '/api': {
-        target: 'http://localhost:3888',
+        target: `http://127.0.0.1:${controlPort}`,
         changeOrigin: true,
         configure: (proxy) => {
           proxy.on('proxyRes', (proxyRes, req) => {

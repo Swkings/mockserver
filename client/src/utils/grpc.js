@@ -30,8 +30,17 @@ export function moveGrpcMethodIndex(currentIndex, itemCount, offset) {
   return (current + offset + itemCount) % itemCount;
 }
 
-export function findMatchingGrpcItem(items = [], source) {
+export function findMatchingGrpcItem(items = [], source, preferredId) {
   if (!source?.methodName) return null;
+
+  const preferred = preferredId
+    ? items.find((candidate) => candidate.id === preferredId)
+    : null;
+  if (preferred && (
+    sameText(preferred.packageName, source.packageName)
+    && sameText(preferred.serviceName, source.serviceName)
+    && sameText(preferred.methodName, source.methodName)
+  )) return preferred;
 
   const exact = items.find((candidate) => (
     sameText(candidate.packageName, source.packageName)

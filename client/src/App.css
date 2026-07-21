@@ -1555,7 +1555,7 @@ button.ghost.danger { color: var(--danger); border-color: var(--danger-border); 
   box-shadow: 0 0 0 3px var(--accent-soft);
 }
 .grpc-method-options {
-  max-height: 260px;
+  max-height: min(420px, 60vh);
   padding-top: 5px;
   overflow-y: auto;
 }
