@@ -192,6 +192,7 @@ export default function App() {
 
   const sidebarResize = useDragResize({ initialSize: 320, minSize: 320, maxSize: 480, invert: false });
   const [contextMenu, setContextMenu] = useState(null);
+  const [collapsedProjects, setCollapsedProjects] = useState({});
   const [collapsedFolders, setCollapsedFolders] = useState({});
   const draftRef = useRef(null);
   const draftVersionRef = useRef(0);
@@ -1307,18 +1308,20 @@ export default function App() {
             {projects.map((p) => {
               const st = status.find((s) => s.id === p.id);
               const active = selectedProjectId === p.id;
+              const collapsed = collapsedProjects[p.id] === true;
+              const expanded = active && !collapsed;
+              const selectProject = () => {
+                setSelectedProjectId(p.id);
+                setCollapsedProjects((prev) => ({ ...prev, [p.id]: false }));
+                setShowSettings(false);
+                setSelectedClientApiId(null);
+                setSelectedGrpcMockId(null);
+                setSelectedGrpcClientId(null);
+              };
               return (
                 <div key={p.id} className="nav-group">
-                  <button
-                    type="button"
+                  <div
                     className={`nav-project ${active ? 'active' : ''}`}
-                    onClick={() => {
-                      setSelectedProjectId(p.id);
-                      setShowSettings(false);
-                      setSelectedClientApiId(null);
-                      setSelectedGrpcMockId(null);
-                      setSelectedGrpcClientId(null);
-                    }}
                     onContextMenu={(e) => openContextMenu(e, [
                       { label: '项目设置', onClick: () => openProjectSettings(p.id) },
                       { label: '导出项目', onClick: () => exportProjectFile(p.id, p.name) },
@@ -1337,12 +1340,29 @@ export default function App() {
                       },
                     ])}
                   >
-                    <span className="nav-name">{p.name}</span>
-                    <span className={'project-protocol-dot ' + (st?.running ? 'on' : '')} title={'HTTP :' + p.port}>H</span>
-                    <span className={'project-protocol-dot ' + (st?.grpc?.running ? 'on' : '')} title={'gRPC :' + (p.grpcPort || 50051)}>G</span>
-                  </button>
+                    <button
+                      type="button"
+                      className="nav-project-caret"
+                      aria-label={expanded ? `折叠项目 ${p.name}` : `展开项目 ${p.name}`}
+                      aria-expanded={expanded}
+                      onClick={() => {
+                        if (!active) {
+                          selectProject();
+                          return;
+                        }
+                        setCollapsedProjects((prev) => ({ ...prev, [p.id]: !collapsed }));
+                      }}
+                    >
+                      {expanded ? '⌄' : '›'}
+                    </button>
+                    <button type="button" className="nav-project-main" onClick={selectProject}>
+                      <span className="nav-name">{p.name}</span>
+                      <span className={'project-protocol-dot ' + (st?.running ? 'on' : '')} title={'HTTP :' + p.port}>H</span>
+                      <span className={'project-protocol-dot ' + (st?.grpc?.running ? 'on' : '')} title={'gRPC :' + (p.grpcPort || 50051)}>G</span>
+                    </button>
+                  </div>
 
-                  {active && draft && (
+                  {expanded && draft && (
                     <div className="nav-items">
                       {renderApiNavTabs()}
                     </div>
