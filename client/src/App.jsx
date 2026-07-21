@@ -13,6 +13,7 @@ import MockServiceSwitch from './components/MockServiceSwitch.jsx';
 import { duplicateApi, duplicateClientApi, duplicateGrpcItem } from './utils/duplicate.js';
 import { useDragResize } from './components/SplitPane.jsx';
 import { defaultEnvironments, resolveClientApiUrl } from './utils/environment.js';
+import { findMatchingGrpcItem, sortGrpcMethods } from './utils/grpc.js';
 import { objToKv, kvToObj } from './utils/format.js';
 
 const emptyProject = () => ({
@@ -87,7 +88,7 @@ const emptyGrpcMock = () => ({
 });
 
 const emptyGrpcClient = () => ({
-  id: crypto.randomUUID(), name: "New gRPC Client", target: "localhost:50051", proto: DEFAULT_PROTO, protoFilename: "greeter.proto",
+  id: crypto.randomUUID(), name: "New gRPC Client", target: "http://127.0.0.1:50051", proto: DEFAULT_PROTO, protoFilename: "greeter.proto",
   packageName: "demo", serviceName: "Greeter", methodName: "SayHello", request: "{\n  \"name\": \"World\"\n}", metadata: {}, timeoutMs: 10000, useTls: false, useEnvironment: true,
 });
 
@@ -1077,6 +1078,7 @@ export default function App() {
     const collapsed = collapsedFolders[key] === true;
     const childFolders = getChildFolders(folders, folder.id);
     const childItems = items.filter((item) => item.folderId === folder.id);
+    const orderedChildItems = type.startsWith('grpc-') ? sortGrpcMethods(childItems) : childItems;
     return (
       <div key={folder.id} className="nav-folder">
         <button
@@ -1102,7 +1104,7 @@ export default function App() {
         {!collapsed && (
           <div className="nav-folder-children">
             {childFolders.map((child) => renderNavFolder(type, child, depth + 1))}
-            {childItems.map((item) => renderNavItem(type, item, depth + 1))}
+            {orderedChildItems.map((item) => renderNavItem(type, item, depth + 1))}
           </div>
         )}
       </div>
@@ -1114,6 +1116,7 @@ export default function App() {
     const items = getItems(type);
     const rootFolders = getChildFolders(folders, undefined);
     const rootItems = items.filter((item) => !item.folderId || !folders.some((folder) => folder.id === item.folderId));
+    const orderedRootItems = type.startsWith('grpc-') ? sortGrpcMethods(rootItems) : rootItems;
     return (
       <div
         className="nav-drop-zone"
@@ -1121,7 +1124,7 @@ export default function App() {
         onDrop={(e) => handleItemDrop(e, type, null)}
       >
         {rootFolders.map((folder) => renderNavFolder(type, folder))}
-        {rootItems.map((item) => renderNavItem(type, item))}
+        {orderedRootItems.map((item) => renderNavItem(type, item))}
       </div>
     );
   }
@@ -1138,11 +1141,21 @@ export default function App() {
     const portKey = isGrpc ? 'grpcPort' : 'port';
 
     function switchType(nextType) {
-      const items = getItems(nextType);
+      const targetItems = getItems(nextType);
+      const items = nextType.startsWith('grpc-') ? sortGrpcMethods(targetItems) : targetItems;
       const currentId = nextType === 'api' ? selectedApiId
         : nextType === 'client-api' ? selectedClientApiId
           : nextType === 'grpc-mock' ? selectedGrpcMockId : selectedGrpcClientId;
-      selectItem(nextType, items.some((item) => item.id === currentId) ? currentId : items[0]?.id || null);
+      const sourceGrpcItem = type === 'grpc-mock'
+        ? selectedGrpcMock
+        : type === 'grpc-client' ? selectedGrpcClient : null;
+      const matchingGrpcItem = type.startsWith('grpc-') && nextType.startsWith('grpc-')
+        ? findMatchingGrpcItem(items, sourceGrpcItem)
+        : null;
+      const nextId = matchingGrpcItem?.id
+        || (items.some((item) => item.id === currentId) ? currentId : items[0]?.id)
+        || null;
+      selectItem(nextType, nextId);
     }
 
     return (

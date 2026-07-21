@@ -4,7 +4,7 @@ const defaultEnvironment = () => ({
   id: 'local',
   name: 'Local',
   host: 'http://localhost:8080',
-  grpcTarget: 'localhost:50051',
+  grpcTarget: 'http://127.0.0.1:50051',
 });
 
 function normalizeList(environments) {
@@ -77,7 +77,7 @@ export default function EnvironmentManager({
       id,
       name: `Env ${list.length + 1}`,
       host: 'http://localhost:8080',
-      grpcTarget: 'localhost:50051',
+      grpcTarget: 'http://127.0.0.1:50051',
     }]);
   }
 
@@ -111,7 +111,7 @@ export default function EnvironmentManager({
           <div className="env-row" key={env.id}>
             <input className="env-input" value={env.name} placeholder="环境名称" onChange={(e) => updateEnv(idx, 'name', e.target.value)} />
             <input className="env-input mono" value={env.host} placeholder="http://localhost:8080" onChange={(e) => updateEnv(idx, 'host', e.target.value)} />
-            <input className="env-input mono" value={env.grpcTarget} placeholder="localhost:50051" onChange={(e) => updateEnv(idx, 'grpcTarget', e.target.value)} />
+            <input className="env-input mono" value={env.grpcTarget} placeholder="http://127.0.0.1:50051" onChange={(e) => updateEnv(idx, 'grpcTarget', e.target.value)} />
             <button type="button" className="icon-btn" title="删除环境" disabled={list.length <= 1} onClick={() => removeEnv(idx)}>×</button>
           </div>
         ))}

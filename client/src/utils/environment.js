@@ -118,7 +118,7 @@ export function syncApiPathParams(clientApi) {
 }
 
 export function defaultEnvironments() {
-  return [{ id: 'local', name: 'Local', host: 'http://localhost:8080', grpcTarget: 'localhost:50051' }];
+  return [{ id: 'local', name: 'Local', host: 'http://localhost:8080', grpcTarget: 'http://127.0.0.1:50051' }];
 }
 
 export function migrateProjectEnvironments(project) {

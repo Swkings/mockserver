@@ -5,6 +5,8 @@ import KVEditor from './KVEditor.jsx';
 import SplitPane from './SplitPane.jsx';
 import EnvironmentManager from './EnvironmentManager.jsx';
 import { getActiveEnvironment } from '../utils/environment.js';
+import { sortGrpcMethods } from '../utils/grpc.js';
+import GrpcMethodPicker from './GrpcMethodPicker.jsx';
 
 const GRPC_CODES = [
   [0, 'OK'], [1, 'CANCELLED'], [2, 'UNKNOWN'], [3, 'INVALID_ARGUMENT'],
@@ -16,7 +18,7 @@ const GRPC_CODES = [
 
 function normalizeGrpcTarget(value) {
   const raw = String(value || '').trim();
-  if (!raw) return 'localhost:50051';
+  if (!raw) return 'http://127.0.0.1:50051';
   if (raw.includes('://')) {
     try {
       return new URL(raw).host;
@@ -143,6 +145,10 @@ export default function GrpcEditor({
     method.name.toLowerCase() === String(item.methodName || '').toLowerCase()
     || method.key.toLowerCase() === String(item.methodName || '').toLowerCase()
   )), [selectedService, item.methodName]);
+  const sortedMethods = useMemo(
+    () => sortGrpcMethods(selectedService?.methods || []),
+    [selectedService]
+  );
   const metadataRows = useMemo(() => objToKv(item.metadata), [item.metadata]);
   const activeEnvironment = useMemo(
     () => getActiveEnvironment(environments, activeEnvironmentId),
@@ -150,8 +156,8 @@ export default function GrpcEditor({
   );
   const useEnvironment = item.useEnvironment !== false;
   const resolvedTarget = normalizeGrpcTarget(useEnvironment
-    ? (activeEnvironment?.grpcTarget || item.target || 'localhost:50051')
-    : (item.target || 'localhost:50051'));
+    ? (activeEnvironment?.grpcTarget || item.target || 'http://127.0.0.1:50051')
+    : (item.target || 'http://127.0.0.1:50051'));
 
 
   const actualRequestPath = `${[item.packageName, item.serviceName].filter(Boolean).join(".")}/${item.methodName || "Method"}`;
@@ -186,9 +192,8 @@ export default function GrpcEditor({
     const matchedMethod = service.methods.find((candidate) => (
       candidate.name.toLowerCase() === String(item.methodName || '').toLowerCase()
     ));
-    const nextMethodName = serviceMatches && item.methodName
-      ? item.methodName
-      : (matchedMethod?.name || service.methods[0]?.name || item.methodName);
+    const firstMethod = sortGrpcMethods(service.methods)[0];
+    const nextMethodName = matchedMethod?.name || firstMethod?.name || item.methodName;
     if (serviceMatches && nextMethodName === item.methodName) return;
     patch((target) => {
       target.packageName = service.packageName;
@@ -243,7 +248,7 @@ export default function GrpcEditor({
       const response = await api.inspectGrpc({ proto, protoFilename: file.name });
       const nextServices = response.services || [];
       const service = nextServices[0];
-      const method = service?.methods?.[0];
+      const method = sortGrpcMethods(service?.methods || [])[0];
       setServices(nextServices);
       patch((target) => {
         target.proto = proto;
@@ -310,10 +315,11 @@ export default function GrpcEditor({
                   <select value={`${item.packageName}.${item.serviceName}`} onChange={(event) => {
                     const service = services.find((candidate) => candidate.fullName === event.target.value);
                     if (!service) return;
+                    const firstMethod = sortGrpcMethods(service.methods)[0];
                     patch((target) => {
                       target.packageName = service.packageName;
                       target.serviceName = service.serviceName;
-                      target.methodName = service.methods[0]?.name || target.methodName;
+                      target.methodName = firstMethod?.name || target.methodName;
                     });
                   }}>
                     {services.map((service) => <option key={service.fullName} value={service.fullName}>{service.fullName}</option>)}
@@ -454,7 +460,7 @@ export default function GrpcEditor({
               </div>
               <section>
                 <h4>Target</h4>
-                <input className="field mono-field" value={item.target || ''} disabled={useEnvironment} placeholder="localhost:50051" onChange={(e) => patch((target) => { target.target = e.target.value; })} />
+                <input className="field mono-field" value={item.target || ''} disabled={useEnvironment} placeholder="http://127.0.0.1:50051" onChange={(e) => patch((target) => { target.target = e.target.value; })} />
                 <p className="hint">启用环境时使用当前环境的 gRPC Target；关闭后使用这里的地址。</p>
               </section>
               <section><h4>Metadata</h4><KVEditor resetKey={`${item.id}-metadata`} rows={metadataRows} bulkEdit onChange={(rows) => patch((target) => { const values = kvToObj(rows); target.metadata = Object.keys(values).length ? values : undefined; })} /></section>
@@ -565,38 +571,15 @@ export default function GrpcEditor({
         <span className="method-select grpc-method-select">RPC</span>
         <div className="grpc-rpc-path-editor">
           <code>/{[item.packageName, item.serviceName].filter(Boolean).join(".")}/</code>
-          {(selectedService?.methods || []).length > 0 ? (
-            <div className="grpc-method-combo">
-              <select
-                aria-label="选择 RPC Method"
-                value={selectedMethod?.key || "__manual__"}
-                onChange={(event) => {
-                  const method = selectedService.methods.find((candidate) => candidate.key === event.target.value);
-                  patch((target) => { target.methodName = method?.name || ""; });
-                  setTab(isMock ? "mock" : "body");
-                }}
-              >
-                {selectedService.methods.map((method) => (
-                  <option key={method.key} value={method.key}>{method.name} · {methodType(method)}</option>
-                ))}
-                <option value="__manual__">手动输入 Method…</option>
-              </select>
-              {!selectedMethod && (
-                <input
-                  autoFocus
-                  value={item.methodName || ""}
-                  placeholder="输入 Method"
-                  onChange={(event) => patch((target) => { target.methodName = event.target.value; })}
-                />
-              )}
-            </div>
-          ) : (
-            <input
-              value={item.methodName || ""}
-              placeholder="输入 Method"
-              onChange={(event) => patch((target) => { target.methodName = event.target.value; })}
-            />
-          )}
+          <GrpcMethodPicker
+            methods={sortedMethods}
+            selectedMethod={selectedMethod}
+            currentMethodName={item.methodName}
+            onSelect={(method) => {
+              patch((target) => { target.methodName = method.name; });
+              setTab(isMock ? 'mock' : 'body');
+            }}
+          />
         </div>
         <div className="url-actions">
           {!isMock && <button type="button" className="primary" disabled={sending || busy || !item.proto} onClick={sendRequest}>{sending ? '调用中…' : '调用'}</button>}

@@ -66,7 +66,7 @@ function normalizeParamDescriptions(descs) {
 }
 
 function defaultEnvironments() {
-  return [{ id: 'local', name: 'Local', host: 'http://localhost:8080', grpcTarget: 'localhost:50051' }];
+  return [{ id: 'local', name: 'Local', host: 'http://localhost:8080', grpcTarget: 'http://127.0.0.1:50051' }];
 }
 
 function normalizeEnvironments(project) {
@@ -307,7 +307,7 @@ export class Store {
     return {
       id: item.id || uuidv4(),
       name: item.name || 'New gRPC Client',
-      target: item.target || 'localhost:50051',
+      target: item.target || 'http://127.0.0.1:50051',
       useEnvironment: item.useEnvironment !== false,
       proto: item.proto || '',
       protoFilename: item.protoFilename || 'service.proto',
