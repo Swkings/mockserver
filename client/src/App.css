@@ -1610,6 +1610,47 @@ button.ghost.danger { color: var(--danger); border-color: var(--danger-border); 
 }
 .grpc-body-actions { display: flex; align-items: center; gap: 8px; }
 
+.http-schema-panel { min-height: 0; }
+.http-schema-toolbar {
+  padding: 7px;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+}
+.http-schema-toolbar .field {
+  min-width: 0;
+  width: auto;
+  max-width: 132px;
+  padding: 5px 7px;
+  font-size: 0.72rem;
+}
+.http-schema-tabs { margin-left: auto; flex-shrink: 0; }
+.http-schema-source {
+  flex: 1;
+  width: 100%;
+  min-height: 0;
+  padding: 11px;
+  resize: none;
+  border: 0;
+  outline: 0;
+  background: var(--code-bg);
+  color: var(--code-text);
+  font: 0.76rem/1.55 var(--mono);
+}
+.http-schema-message {
+  flex: 1;
+  padding: 24px 16px;
+  color: var(--muted);
+  font-size: 0.78rem;
+  line-height: 1.6;
+}
+.http-schema-message.error { color: var(--danger); }
+.http-request-body .grpc-body-actions { flex-shrink: 0; }
+.http-request-body .body-get-switch { padding: 4px 8px; white-space: nowrap; }
+
 @media (max-width: 1050px) {
   .grpc-body-grid { grid-template-columns: 1fr; grid-template-rows: minmax(180px, 0.7fr) minmax(260px, 1fr); }
 }

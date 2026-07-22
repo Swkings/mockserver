@@ -8,6 +8,7 @@ import { getActiveEnvironment } from '../utils/environment.js';
 import { sortGrpcMethods } from '../utils/grpc.js';
 import GrpcMethodPicker from './GrpcMethodPicker.jsx';
 import BodyPresetToolbar from './BodyPresetToolbar.jsx';
+import SchemaFieldRows from './SchemaFieldRows.jsx';
 
 const GRPC_CODES = [
   [0, 'OK'], [1, 'CANCELLED'], [2, 'UNKNOWN'], [3, 'INVALID_ARGUMENT'],
@@ -83,30 +84,6 @@ function randomRequest(method) {
 
 function randomResponse(method) {
   return randomPayload(method?.responseSchema, method?.responseStream);
-}
-
-function fieldTypeLabel(field) {
-  let label = field.type || "unknown";
-  if (field.kind === "message") label = String(field.type || "message").split(".").pop();
-  if (field.kind === "map") label = `map<${field.key?.type || "string"}, ${field.value?.type || "unknown"}>`;
-  return field.repeated && field.kind !== "map" ? `${label}[]` : label;
-}
-
-function SchemaFieldRows({ fields, depth = 0 }) {
-  return (fields || []).map((field) => {
-    const children = field.kind === "message"
-      ? field.message?.fields
-      : (field.kind === "map" && field.value?.kind === "message" ? field.value.message?.fields : null);
-    return (
-      <div className="grpc-schema-node" key={`${depth}-${field.number}-${field.name}`}>
-        <div className="grpc-schema-row" style={{ paddingLeft: `${10 + depth * 16}px` }}>
-          <span className="grpc-schema-name">{field.name}</span>
-          <span className={`grpc-schema-type ${field.kind}`}>{fieldTypeLabel(field)}</span>
-        </div>
-        {children?.length > 0 && <SchemaFieldRows fields={children} depth={depth + 1} />}
-      </div>
-    );
-  });
 }
 
 export default function GrpcEditor({

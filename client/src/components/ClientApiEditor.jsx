@@ -3,7 +3,9 @@ import KVEditor from './KVEditor.jsx';
 import SplitPane from './SplitPane.jsx';
 import EnvironmentManager from './EnvironmentManager.jsx';
 import BodyPresetToolbar from './BodyPresetToolbar.jsx';
+import SchemaFieldRows from './SchemaFieldRows.jsx';
 import { api } from '../api.js';
+import { parseHttpRequestSchema, schemaExample } from '../utils/httpRequestSchema.js';
 import {
   HTTP_METHODS,
   objToKv,
@@ -132,6 +134,7 @@ export default function ClientApiEditor({
   onSent,
 }) {
   const [tab, setTab] = useState('body');
+  const [schemaView, setSchemaView] = useState(clientApi.requestSchemaSource ? 'structure' : 'source');
   const [requestFormat, setRequestFormat] = useState('curl');
   const [sending, setSending] = useState(false);
   const [sendResult, setSendResult] = useState(null);
@@ -140,6 +143,14 @@ export default function ClientApiEditor({
   const [envMenuOpen, setEnvMenuOpen] = useState(false);
   const [rightTab, setRightTab] = useState('response');
   const envPickerRef = useRef(null);
+  const requestSchema = useMemo(
+    () => parseHttpRequestSchema(
+      clientApi.requestSchemaSource,
+      clientApi.requestSchemaLanguage || 'auto',
+      clientApi.requestSchemaRoot
+    ),
+    [clientApi.requestSchemaSource, clientApi.requestSchemaLanguage, clientApi.requestSchemaRoot]
+  );
 
   const useProjectHeaders = clientApi.useProjectHeaders !== false;
   const useProjectCookies = clientApi.useProjectCookies !== false;
@@ -310,6 +321,21 @@ export default function ClientApiEditor({
     });
   }
 
+  function generateBodyFromSchema() {
+    patch((a) => {
+      a.body = JSON.stringify(schemaExample(requestSchema), null, 2);
+    });
+  }
+
+  function inferSchemaFromBody() {
+    patch((a) => {
+      a.requestSchemaLanguage = 'json';
+      a.requestSchemaSource = a.body || '{}';
+      a.requestSchemaRoot = undefined;
+    });
+    setSchemaView('structure');
+  }
+
   async function handleSend() {
     setSending(true);
     setSendError('');
@@ -465,31 +491,101 @@ export default function ClientApiEditor({
       )}
 
       {tab === 'body' && (
-        <div className="panel fill-panel">
-          <div className="body-toolbar">
-            <BodyPresetToolbar
-              presets={clientApi.bodyPresets}
-              body={clientApi.body}
-              onBodyChange={(body) => patch((a) => { a.body = body; })}
-              onPresetsChange={(bodyPresets) => patch((a) => { a.bodyPresets = bodyPresets; })}
-              onSave={onSave}
-            />
-            <button type="button" className="ghost" onClick={formatBodyJson}>格式化</button>
-            <label className="body-get-switch" title="GET 请求携带 Body">
-              <input
-                type="checkbox"
-                checked={clientApi.allowGetBody === true}
-                onChange={(e) => patch((a) => { a.allowGetBody = e.target.checked; })}
+        <div className="panel fill-panel http-request-body">
+          <div className="grpc-body-grid http-body-grid">
+            <section className="grpc-schema-panel http-schema-panel">
+              <div className="grpc-body-pane-head">
+                <strong>请求参数结构</strong>
+                <code>{requestSchema.typeName || requestSchema.language}</code>
+              </div>
+              <div className="http-schema-toolbar">
+                <select
+                  className="field"
+                  aria-label="结构代码语言"
+                  value={clientApi.requestSchemaLanguage || 'auto'}
+                  onChange={(event) => patch((a) => {
+                    a.requestSchemaLanguage = event.target.value;
+                    a.requestSchemaRoot = undefined;
+                  })}
+                >
+                  <option value="auto">自动识别</option>
+                  <option value="go">Go</option>
+                  <option value="javascript">JavaScript</option>
+                  <option value="typescript">TypeScript</option>
+                  <option value="python">Python</option>
+                  <option value="java">Java</option>
+                  <option value="json">JSON</option>
+                </select>
+                {requestSchema.availableTypes.length > 1 && (
+                  <select
+                    className="field"
+                    aria-label="根类型"
+                    value={requestSchema.typeName}
+                    onChange={(event) => patch((a) => { a.requestSchemaRoot = event.target.value; })}
+                  >
+                    {requestSchema.availableTypes.map((typeName) => (
+                      <option value={typeName} key={typeName}>{typeName}</option>
+                    ))}
+                  </select>
+                )}
+                <div className="mini-tabs http-schema-tabs">
+                  <button type="button" className={schemaView === 'source' ? 'active' : ''} onClick={() => setSchemaView('source')}>源码</button>
+                  <button type="button" className={schemaView === 'structure' ? 'active' : ''} onClick={() => setSchemaView('structure')}>结构</button>
+                </div>
+                <button type="button" className="ghost sm" onClick={inferSchemaFromBody}>从 Body</button>
+              </div>
+              {schemaView === 'source' ? (
+                <textarea
+                  className="http-schema-source"
+                  value={clientApi.requestSchemaSource || ''}
+                  spellCheck={false}
+                  placeholder="粘贴 Go struct、JavaScript 对象、TypeScript interface、Python dataclass/Pydantic、Java class 或 JSON"
+                  onChange={(event) => patch((a) => {
+                    a.requestSchemaSource = event.target.value;
+                    a.requestSchemaRoot = undefined;
+                  })}
+                />
+              ) : requestSchema.error ? (
+                <div className="http-schema-message error">{requestSchema.error}</div>
+              ) : requestSchema.fields.length ? (
+                <div className="grpc-schema-tree">
+                  <SchemaFieldRows fields={requestSchema.fields} />
+                </div>
+              ) : (
+                <div className="http-schema-message">请先粘贴代码结构，或从当前 Body 推断。</div>
+              )}
+            </section>
+            <section className="grpc-request-json-panel">
+              <div className="body-toolbar grpc-body-json-toolbar">
+                <strong>请求 Body</strong>
+                <BodyPresetToolbar
+                  presets={clientApi.bodyPresets}
+                  body={clientApi.body}
+                  onBodyChange={(body) => patch((a) => { a.body = body; })}
+                  onPresetsChange={(bodyPresets) => patch((a) => { a.bodyPresets = bodyPresets; })}
+                  onSave={onSave}
+                />
+                <div className="grpc-body-actions">
+                  <button type="button" className="ghost sm" disabled={!requestSchema.fields.length} onClick={generateBodyFromSchema}>生成示例</button>
+                  <button type="button" className="ghost sm" onClick={formatBodyJson}>格式化</button>
+                  <label className="body-get-switch" title="GET 请求携带 Body">
+                    <input
+                      type="checkbox"
+                      checked={clientApi.allowGetBody === true}
+                      onChange={(e) => patch((a) => { a.allowGetBody = e.target.checked; })}
+                    />
+                    <span>GET Body</span>
+                  </label>
+                </div>
+              </div>
+              <textarea
+                className="code-input fill"
+                value={clientApi.body ?? ''}
+                spellCheck={false}
+                onChange={(e) => patch((a) => { a.body = e.target.value; })}
               />
-              <span>GET Body</span>
-            </label>
+            </section>
           </div>
-          <textarea
-            className="code-input fill"
-            value={clientApi.body ?? ''}
-            spellCheck={false}
-            onChange={(e) => patch((a) => { a.body = e.target.value; })}
-          />
         </div>
       )}
     </>
