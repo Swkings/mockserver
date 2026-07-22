@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react';
 import KVEditor from './KVEditor.jsx';
 import SplitPane from './SplitPane.jsx';
+import BodyPresetToolbar from './BodyPresetToolbar.jsx';
 import {
   HTTP_METHODS,
   objToKv,
@@ -151,6 +152,15 @@ export default function ApiEditor({
             <button type="button" className={bodyTab === 'body' ? 'active' : ''} onClick={() => setBodyTab('body')}>编辑</button>
             <button type="button" className={bodyTab === 'preview' ? 'active' : ''} onClick={() => setBodyTab('preview')}>预览</button>
           </div>
+          {bodyTab === 'body' && (
+            <BodyPresetToolbar
+              presets={api.bodyPresets}
+              body={api.response?.body}
+              onBodyChange={(body) => patch((a) => { a.response = { ...a.response, body }; })}
+              onPresetsChange={(bodyPresets) => patch((a) => { a.bodyPresets = bodyPresets; })}
+              onSave={onSave}
+            />
+          )}
           <button type="button" className="link" onClick={formatResponseBody}>格式化</button>
         </div>
         {bodyTab === 'body' ? (

@@ -7,6 +7,7 @@ import EnvironmentManager from './EnvironmentManager.jsx';
 import { getActiveEnvironment } from '../utils/environment.js';
 import { sortGrpcMethods } from '../utils/grpc.js';
 import GrpcMethodPicker from './GrpcMethodPicker.jsx';
+import BodyPresetToolbar from './BodyPresetToolbar.jsx';
 
 const GRPC_CODES = [
   [0, 'OK'], [1, 'CANCELLED'], [2, 'UNKNOWN'], [3, 'INVALID_ARGUMENT'],
@@ -362,6 +363,13 @@ export default function GrpcEditor({
             <section className="grpc-request-json-panel">
               <div className="body-toolbar grpc-body-json-toolbar">
                 <strong>请求 JSON</strong>
+                <BodyPresetToolbar
+                  presets={item.bodyPresets}
+                  body={item.request}
+                  onBodyChange={(body) => patch((target) => { target.request = body; })}
+                  onPresetsChange={(bodyPresets) => patch((target) => { target.bodyPresets = bodyPresets; })}
+                  onSave={onSave}
+                />
                 <div className="grpc-body-actions">
                   <button
                     type="button"
@@ -399,6 +407,13 @@ export default function GrpcEditor({
             <section className="grpc-request-json-panel">
               <div className="body-toolbar grpc-body-json-toolbar">
                 <strong>Mock 响应 JSON</strong>
+                <BodyPresetToolbar
+                  presets={item.bodyPresets}
+                  body={item.response}
+                  onBodyChange={(body) => patch((target) => { target.response = body; })}
+                  onPresetsChange={(bodyPresets) => patch((target) => { target.bodyPresets = bodyPresets; })}
+                  onSave={onSave}
+                />
                 <div className="grpc-body-actions">
                   <button
                     type="button"

@@ -3,6 +3,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import yaml from 'js-yaml';
 import { v4 as uuidv4 } from 'uuid';
+import { normalizeBodyPresets } from './utils/bodyPresets.js';
 
 const PARAM_RE = /:([a-zA-Z_][a-zA-Z0-9_]*)|\{([a-zA-Z_][a-zA-Z0-9_]*)\}/g;
 
@@ -246,6 +247,7 @@ export class Store {
       priority: Number(api.priority) || 0,
       match: api.match || { method: 'GET', path: '/' },
       folderId: api.folderId || undefined,
+      bodyPresets: normalizeBodyPresets(api.bodyPresets),
       response: {
         status: api.response?.status ?? 200,
         headers: api.response?.headers || { 'Content-Type': 'application/json' },
@@ -269,6 +271,7 @@ export class Store {
       useProjectHeaders: clientApi.useProjectHeaders !== false,
       useProjectCookies: clientApi.useProjectCookies !== false,
       body: clientApi.body ?? '',
+      bodyPresets: normalizeBodyPresets(clientApi.bodyPresets),
       allowGetBody: clientApi.allowGetBody === true,
       description: clientApi.description || '',
       folderId: clientApi.folderId || undefined,
@@ -295,6 +298,7 @@ export class Store {
       serviceName: item.serviceName || '',
       methodName: item.methodName || '',
       response: item.response ?? '{}',
+      bodyPresets: normalizeBodyPresets(item.bodyPresets),
       delayMs: Number(item.delayMs) || 0,
       errorCode: item.errorCode === '' || item.errorCode == null ? undefined : Number(item.errorCode),
       errorMessage: item.errorMessage || '',
@@ -315,6 +319,7 @@ export class Store {
       serviceName: item.serviceName || '',
       methodName: item.methodName || '',
       request: item.request ?? '{}',
+      bodyPresets: normalizeBodyPresets(item.bodyPresets),
       metadata: normalizeClientHeaders(item.metadata),
       timeoutMs: Number(item.timeoutMs) || 10000,
       useTls: item.useTls === true,

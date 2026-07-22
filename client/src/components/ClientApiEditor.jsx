@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import KVEditor from './KVEditor.jsx';
 import SplitPane from './SplitPane.jsx';
 import EnvironmentManager from './EnvironmentManager.jsx';
+import BodyPresetToolbar from './BodyPresetToolbar.jsx';
 import { api } from '../api.js';
 import {
   HTTP_METHODS,
@@ -466,6 +467,13 @@ export default function ClientApiEditor({
       {tab === 'body' && (
         <div className="panel fill-panel">
           <div className="body-toolbar">
+            <BodyPresetToolbar
+              presets={clientApi.bodyPresets}
+              body={clientApi.body}
+              onBodyChange={(body) => patch((a) => { a.body = body; })}
+              onPresetsChange={(bodyPresets) => patch((a) => { a.bodyPresets = bodyPresets; })}
+              onSave={onSave}
+            />
             <button type="button" className="ghost" onClick={formatBodyJson}>格式化</button>
             <label className="body-get-switch" title="GET 请求携带 Body">
               <input
