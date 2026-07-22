@@ -15,6 +15,19 @@ import { useDragResize } from './components/SplitPane.jsx';
 import { defaultEnvironments, resolveClientApiUrl } from './utils/environment.js';
 import { findMatchingGrpcItem, sortGrpcMethods } from './utils/grpc.js';
 import { objToKv, kvToObj } from './utils/format.js';
+import {
+  readProjectActivity,
+  removeProjectActivity,
+  resolveProjectActivity,
+  writeProjectActivity,
+} from './utils/projectActivity.js';
+import {
+  clearAllRequestRecords,
+  clearProjectRequestRecords,
+  mergeRequestRecords,
+  readProjectRequestRecords,
+  writeProjectRequestRecords,
+} from './utils/requestRecords.js';
 
 const emptyProject = () => ({
   name: 'New Project',
@@ -145,6 +158,19 @@ function getDescendantFolderIds(folders, folderId) {
   return ids;
 }
 
+function getAncestorFolderIds(folders, folderId) {
+  const byId = new Map((folders || []).map((folder) => [folder.id, folder]));
+  const ids = [];
+  const visited = new Set();
+  let currentId = folderId;
+  while (currentId && !visited.has(currentId)) {
+    visited.add(currentId);
+    ids.push(currentId);
+    currentId = byId.get(currentId)?.parentId;
+  }
+  return ids;
+}
+
 
 function ImportIcon() {
   return (
@@ -176,6 +202,9 @@ export default function App() {
   const [selectedGrpcClientId, setSelectedGrpcClientId] = useState(null);
   const lastGrpcMockIdRef = useRef(null);
   const lastGrpcClientIdRef = useRef(null);
+  const projectOpenIntentRef = useRef(null);
+  const activeNavItemRef = useRef(null);
+  const selectedProjectIdRef = useRef(null);
   const [grpcOpenVersion, setGrpcOpenVersion] = useState(0);
   const [draft, setDraft] = useState(null);
   const [requests, setRequests] = useState([]);
@@ -200,6 +229,8 @@ export default function App() {
   const pendingSaveRef = useRef(false);
   const dialogResolverRef = useRef(null);
   const [dialog, setDialog] = useState(null);
+
+  selectedProjectIdRef.current = selectedProjectId;
 
   const notify = useCallback((text, type = 'info') => {
     if (!text) return;
@@ -253,11 +284,15 @@ export default function App() {
   }
 
   const loadRequests = useCallback(async (projectId) => {
+    const cached = readProjectRequestRecords(projectId);
+    if (selectedProjectIdRef.current === projectId) setRequests(cached);
     const params = new URLSearchParams({ limit: '200' });
     if (projectId) params.set('projectId', projectId);
-    const r = await api.listRequests(params.toString());
-    setRequests(r);
-    return r;
+    const remote = await api.listRequests(params.toString());
+    const merged = mergeRequestRecords(cached, remote);
+    writeProjectRequestRecords(projectId, merged);
+    if (selectedProjectIdRef.current === projectId) setRequests(merged);
+    return merged;
   }, []);
 
   const refresh = useCallback(async () => {
@@ -288,16 +323,27 @@ export default function App() {
 
   useEffect(() => {
     const unsub = subscribeEvents((event, payload) => {
-      if (event === 'request' && !paused) {
-        if (selectedProjectId && payload.projectId !== selectedProjectId) return;
-        setRequests((prev) => [payload, ...prev.filter((r) => r.id !== payload.id)].slice(0, 200));
+      if (event === 'request') {
+        const cached = readProjectRequestRecords(payload.projectId);
+        const persisted = mergeRequestRecords(cached, [payload]);
+        writeProjectRequestRecords(payload.projectId, persisted);
+        if (!paused && selectedProjectId === payload.projectId) {
+          setRequests((prev) => mergeRequestRecords(prev, [payload]));
+        }
       }
-      if (event === 'projects' || event === 'requests_cleared') {
+      if (event === 'projects') {
         refresh().catch(() => {});
+      }
+      if (event === 'requests_cleared') {
+        if (payload?.projectId) clearProjectRequestRecords(payload.projectId, payload.apiId);
+        else clearAllRequestRecords();
+        if (!payload?.projectId || payload.projectId === selectedProjectId) {
+          loadRequests(selectedProjectId).catch(() => {});
+        }
       }
     }, setSseConnected);
     return unsub;
-  }, [refresh, paused, selectedProjectId]);
+  }, [refresh, paused, selectedProjectId, loadRequests]);
 
   useEffect(() => {
     if (!selectedProjectId) {
@@ -306,24 +352,98 @@ export default function App() {
       setSelectedClientApiId(null);
       setSelectedGrpcMockId(null);
       setSelectedGrpcClientId(null);
-      return;
+      return undefined;
     }
+
+    let active = true;
     api.getProject(selectedProjectId).then((p) => {
+      if (!active) return;
       const environments = p.environments?.length ? p.environments : defaultEnvironments();
       const normalized = normalizeDraftProject({
         ...p,
         environments,
         activeEnvironmentId: p.activeEnvironmentId || environments[0]?.id,
       });
+      const intent = projectOpenIntentRef.current?.projectId === selectedProjectId
+        ? projectOpenIntentRef.current
+        : null;
+      if (intent) projectOpenIntentRef.current = null;
+      const savedActivity = readProjectActivity(selectedProjectId);
+      const restored = resolveProjectActivity(normalized, intent
+        ? { ...savedActivity, location: intent.location }
+        : savedActivity);
+
       setDraft(normalized);
       draftRef.current = normalized;
       setDirty(false);
-      setSelectedApiId(normalized.apis?.[0]?.id || null);
-      setSelectedClientApiId(null);
-      setSelectedGrpcMockId(null);
-      setSelectedGrpcClientId(null);
-    }).catch((err) => setMessage(err.message));
-  }, [selectedProjectId]);
+      setNavApiType(restored.type);
+      setSelectedApiId(restored.type === 'api' ? restored.itemId : null);
+      setSelectedClientApiId(restored.type === 'client-api' ? restored.itemId : null);
+      setSelectedGrpcMockId(restored.type === 'grpc-mock' ? restored.itemId : null);
+      setSelectedGrpcClientId(restored.type === 'grpc-client' ? restored.itemId : null);
+      lastGrpcMockIdRef.current = restored.type === 'grpc-mock' ? restored.itemId : null;
+      lastGrpcClientIdRef.current = restored.type === 'grpc-client' ? restored.itemId : null;
+      setShowSettings(restored.location === 'settings');
+      setMainView(restored.mainView);
+
+      const cfg = folderConfig[restored.type];
+      const selectedItem = normalized[cfg.itemsKey]?.find((item) => item.id === restored.itemId);
+      const ancestorIds = getAncestorFolderIds(normalized[cfg.foldersKey], selectedItem?.folderId);
+      if (ancestorIds.length) {
+        setCollapsedFolders((prev) => {
+          const next = { ...prev };
+          for (const folderId of ancestorIds) next[restored.type + ':' + folderId] = false;
+          return next;
+        });
+      }
+    }).catch((err) => {
+      if (active) setMessage(err.message);
+    });
+
+    return () => {
+      active = false;
+    };
+  }, [selectedProjectId, setMessage]);
+
+  useEffect(() => {
+    if (!selectedProjectId || draft?.id !== selectedProjectId) return;
+    const type = selectedApiId ? 'api'
+      : selectedClientApiId ? 'client-api'
+        : selectedGrpcMockId ? 'grpc-mock'
+          : selectedGrpcClientId ? 'grpc-client'
+            : navApiType;
+    const itemId = selectedApiId || selectedClientApiId || selectedGrpcMockId || selectedGrpcClientId || null;
+    writeProjectActivity(selectedProjectId, {
+      type,
+      itemId,
+      location: showSettings ? 'settings' : itemId ? 'item' : 'empty',
+      mainView,
+    });
+  }, [
+    draft?.id,
+    mainView,
+    navApiType,
+    selectedApiId,
+    selectedClientApiId,
+    selectedGrpcMockId,
+    selectedGrpcClientId,
+    selectedProjectId,
+    showSettings,
+  ]);
+
+  useEffect(() => {
+    const frame = window.requestAnimationFrame(() => {
+      activeNavItemRef.current?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [
+    selectedProjectId,
+    selectedApiId,
+    selectedClientApiId,
+    selectedGrpcMockId,
+    selectedGrpcClientId,
+    showSettings,
+  ]);
 
   const selectedStatus = useMemo(
     () => status.find((s) => s.id === selectedProjectId),
@@ -854,12 +974,11 @@ export default function App() {
   }
 
   function openProjectSettings(projectId) {
+    if (projectId !== selectedProjectId) {
+      projectOpenIntentRef.current = { projectId, location: 'settings' };
+    }
     setSelectedProjectId(projectId);
     setShowSettings(true);
-    setSelectedApiId(null);
-    setSelectedClientApiId(null);
-    setSelectedGrpcMockId(null);
-    setSelectedGrpcClientId(null);
   }
 
   async function importProjectFile(file) {
@@ -913,12 +1032,21 @@ export default function App() {
 
   function clearLogs() {
     if (activeSelection && draft) {
-      return api.clearRequests(draft.id, activeSelection.id).then(() => loadRequests(draft.id));
+      return api.clearRequests(draft.id, activeSelection.id).then(() => {
+        clearProjectRequestRecords(draft.id, activeSelection.id);
+        return loadRequests(draft.id);
+      });
     }
     if (draft) {
-      return api.clearRequests(draft.id).then(() => loadRequests(draft.id));
+      return api.clearRequests(draft.id).then(() => {
+        clearProjectRequestRecords(draft.id);
+        return loadRequests(draft.id);
+      });
     }
-    return api.clearRequests().then(() => setRequests([]));
+    return api.clearRequests().then(() => {
+      clearAllRequestRecords();
+      setRequests([]);
+    });
   }
 
   const itemExportKinds = { api: 'mock-api', 'client-api': 'api', 'grpc-mock': 'grpc-mock', 'grpc-client': 'grpc-client' };
@@ -1053,6 +1181,7 @@ export default function App() {
         type="button"
         key={item.id}
         className={'nav-item ' + (active ? 'active' : '')}
+        ref={active ? activeNavItemRef : undefined}
         style={{ paddingLeft: (8 + depth * 14) + 'px' }}
         onClick={select}
         draggable
@@ -1311,12 +1440,13 @@ export default function App() {
               const collapsed = collapsedProjects[p.id] === true;
               const expanded = active && !collapsed;
               const selectProject = () => {
-                setSelectedProjectId(p.id);
                 setCollapsedProjects((prev) => ({ ...prev, [p.id]: false }));
-                setShowSettings(false);
-                setSelectedClientApiId(null);
-                setSelectedGrpcMockId(null);
-                setSelectedGrpcClientId(null);
+                if (selectedProjectId === p.id) {
+                  setShowSettings(false);
+                  return;
+                }
+                projectOpenIntentRef.current = null;
+                setSelectedProjectId(p.id);
               };
               return (
                 <div key={p.id} className="nav-group">
@@ -1333,6 +1463,8 @@ export default function App() {
                           const confirmed = await confirmDialog({ title: '删除项目', message: '确定删除项目？', danger: true, confirmLabel: '删除' });
                           if (!confirmed) return;
                           api.deleteProject(p.id).then(() => {
+                            removeProjectActivity(p.id);
+                            clearProjectRequestRecords(p.id);
                             setSelectedProjectId(null);
                             refresh();
                           });
@@ -1405,6 +1537,8 @@ export default function App() {
                     const confirmed = await confirmDialog({ title: '删除项目', message: '确定删除项目？', danger: true, confirmLabel: '删除' });
                     if (!confirmed) return;
                     api.deleteProject(draft.id).then(() => {
+                      removeProjectActivity(draft.id);
+                      clearProjectRequestRecords(draft.id);
                       setSelectedProjectId(null);
                       refresh();
                     });
