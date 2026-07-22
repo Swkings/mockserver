@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import yaml from 'js-yaml';
 import { v4 as uuidv4 } from 'uuid';
 import { normalizeBodyPresets } from './utils/bodyPresets.js';
+import { normalizeProjectGrpcProtos } from './utils/grpcProtos.js';
 
 const PARAM_RE = /:([a-zA-Z_][a-zA-Z0-9_]*)|\{([a-zA-Z_][a-zA-Z0-9_]*)\}/g;
 
@@ -214,6 +215,7 @@ export class Store {
 
   normalizeProject(project) {
     const { environments, activeEnvironmentId } = normalizeEnvironments(project);
+    const grpc = normalizeProjectGrpcProtos(project);
     return {
       id: project.id || uuidv4(),
       name: project.name || 'Untitled Project',
@@ -232,10 +234,11 @@ export class Store {
       clientApiFolders: normalizeFolders(getProjectClientApiFolders(project)),
       grpcMockFolders: normalizeFolders(project.grpcMockFolders),
       grpcClientFolders: normalizeFolders(project.grpcClientFolders),
+      protos: grpc.protos,
       apis: (project.apis || []).map((api) => this.normalizeApi(api)),
       clientApis: getProjectClientApis(project).map((clientApi) => this.normalizeClientApi(clientApi)),
-      grpcMocks: (project.grpcMocks || []).map((item) => this.normalizeGrpcMock(item)),
-      grpcClients: (project.grpcClients || []).map((item) => this.normalizeGrpcClient(item)),
+      grpcMocks: grpc.grpcMocks.map((item) => this.normalizeGrpcMock(item)),
+      grpcClients: grpc.grpcClients.map((item) => this.normalizeGrpcClient(item)),
     };
   }
 
@@ -295,8 +298,7 @@ export class Store {
       id: item.id || uuidv4(),
       name: item.name || 'New gRPC Mock',
       enabled: item.enabled !== false,
-      proto: item.proto || '',
-      protoFilename: item.protoFilename || 'service.proto',
+      protoId: item.protoId || undefined,
       packageName: item.packageName || '',
       serviceName: item.serviceName || '',
       methodName: item.methodName || '',
@@ -316,8 +318,7 @@ export class Store {
       name: item.name || 'New gRPC Client',
       target: item.target || 'http://127.0.0.1:50051',
       useEnvironment: item.useEnvironment !== false,
-      proto: item.proto || '',
-      protoFilename: item.protoFilename || 'service.proto',
+      protoId: item.protoId || undefined,
       packageName: item.packageName || '',
       serviceName: item.serviceName || '',
       methodName: item.methodName || '',

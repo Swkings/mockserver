@@ -5,6 +5,7 @@ import {
   parseJsonValue,
   resolveGrpcMethod,
 } from './grpcRuntime.js';
+import { resolveProjectGrpcConfig } from './utils/grpcProtos.js';
 
 function sleep(ms) {
   return ms > 0 ? new Promise((resolve) => setTimeout(resolve, ms)) : Promise.resolve();
@@ -48,7 +49,7 @@ export class GrpcEngine {
 
     try {
       for (const config of (project.grpcMocks || []).filter((item) => item.enabled !== false)) {
-        const resolved = resolveGrpcMethod(config);
+        const resolved = resolveGrpcMethod(resolveProjectGrpcConfig(project, config));
         const key = resolved.service.fullName;
         if (!groups.has(key)) {
           groups.set(key, { definition: resolved.service.definition, handlers: {} });

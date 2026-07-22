@@ -37,8 +37,7 @@ function mock(id, methodName, response) {
     id,
     name: methodName,
     enabled: true,
-    proto,
-    protoFilename: 'flow.proto',
+    protoId: 'flow-proto',
     packageName: 'demo',
     serviceName: 'Flow',
     methodName,
@@ -96,6 +95,7 @@ test('GrpcEngine and client invoke unary and streaming methods', async (t) => {
     grpcEnabled: true,
     grpcHost: '127.0.0.1',
     grpcPort: port,
+    protos: [{ id: 'flow-proto', name: 'Flow', filename: 'flow.proto', content: proto }],
     grpcMocks: [
       mock('unary', 'Unary', { value: 'unary-response' }),
       mock('server-stream', 'ServerStream', [{ value: 'one' }, { value: 'two' }]),

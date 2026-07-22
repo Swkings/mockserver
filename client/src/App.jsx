@@ -9,6 +9,7 @@ import MethodBadge from './components/MethodBadge.jsx';
 import ContextMenu from './components/ContextMenu.jsx';
 import Dropdown from './components/Dropdown.jsx';
 import ProjectSettings from './components/ProjectSettings.jsx';
+import ProtoManager from './components/ProtoManager.jsx';
 import MockServiceSwitch from './components/MockServiceSwitch.jsx';
 import { duplicateApi, duplicateClientApi, duplicateGrpcItem } from './utils/duplicate.js';
 import { useDragResize } from './components/SplitPane.jsx';
@@ -45,6 +46,7 @@ const emptyProject = () => ({
   clientApiFolders: [],
   grpcMockFolders: [],
   grpcClientFolders: [],
+  protos: [],
   apis: [],
   clientApis: [],
   grpcMocks: [],
@@ -84,25 +86,14 @@ const emptyApi = () => ({
   },
 });
 
-const DEFAULT_PROTO = `syntax = "proto3";
-
-package demo;
-
-service Greeter {
-  rpc SayHello (HelloRequest) returns (HelloReply);
-}
-
-message HelloRequest { string name = 1; }
-message HelloReply { string message = 1; }`;
-
 const emptyGrpcMock = () => ({
-  id: crypto.randomUUID(), name: "New gRPC Mock", enabled: true, proto: DEFAULT_PROTO, protoFilename: "greeter.proto",
-  packageName: "demo", serviceName: "Greeter", methodName: "SayHello", response: "{\n  \"message\": \"Hello\"\n}", delayMs: 0,
+  id: crypto.randomUUID(), name: "New gRPC Mock", enabled: false, protoId: undefined,
+  packageName: "", serviceName: "", methodName: "", response: "{}", delayMs: 0,
 });
 
 const emptyGrpcClient = () => ({
-  id: crypto.randomUUID(), name: "New gRPC Client", target: "http://127.0.0.1:50051", proto: DEFAULT_PROTO, protoFilename: "greeter.proto",
-  packageName: "demo", serviceName: "Greeter", methodName: "SayHello", request: "{\n  \"name\": \"World\"\n}", metadata: {}, timeoutMs: 10000, useTls: false, useEnvironment: true,
+  id: crypto.randomUUID(), name: "New gRPC Client", target: "http://127.0.0.1:50051", protoId: undefined,
+  packageName: "", serviceName: "", methodName: "", request: "{}", metadata: {}, timeoutMs: 10000, useTls: false, useEnvironment: true,
 });
 
 const folderConfig = {
@@ -132,6 +123,7 @@ function normalizeDraftProject(project) {
     clientApiFolders: project.clientApiFolders || [],
     grpcMockFolders: project.grpcMockFolders || [],
     grpcClientFolders: project.grpcClientFolders || [],
+    protos: project.protos || [],
     apis: project.apis || [],
     clientApis: project.clientApis || [],
     grpcMocks: project.grpcMocks || [],
@@ -215,6 +207,7 @@ export default function App() {
   const [busy, setBusy] = useState(false);
   const [paused, setPaused] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+  const [showProtoManager, setShowProtoManager] = useState(false);
   const [mainView, setMainView] = useState('edit');
   const [navApiType, setNavApiType] = useState('api');
   const [sseConnected, setSseConnected] = useState(false);
@@ -384,6 +377,7 @@ export default function App() {
       lastGrpcMockIdRef.current = restored.type === 'grpc-mock' ? restored.itemId : null;
       lastGrpcClientIdRef.current = restored.type === 'grpc-client' ? restored.itemId : null;
       setShowSettings(restored.location === 'settings');
+      setShowProtoManager(restored.location === 'protos');
       setMainView(restored.mainView);
 
       const cfg = folderConfig[restored.type];
@@ -416,7 +410,7 @@ export default function App() {
     writeProjectActivity(selectedProjectId, {
       type,
       itemId,
-      location: showSettings ? 'settings' : itemId ? 'item' : 'empty',
+      location: showSettings ? 'settings' : showProtoManager ? 'protos' : itemId ? 'item' : 'empty',
       mainView,
     });
   }, [
@@ -428,6 +422,7 @@ export default function App() {
     selectedGrpcMockId,
     selectedGrpcClientId,
     selectedProjectId,
+    showProtoManager,
     showSettings,
   ]);
 
@@ -442,6 +437,7 @@ export default function App() {
     selectedClientApiId,
     selectedGrpcMockId,
     selectedGrpcClientId,
+    showProtoManager,
     showSettings,
   ]);
 
@@ -510,7 +506,7 @@ export default function App() {
         ? ('gRPC /' + [activeSelection.packageName, activeSelection.serviceName].filter(Boolean).join('.') + '/' + (activeSelection.methodName || 'Method'))
         : null;
 
-  const showMainNav = draft && !showSettings && Boolean(activeSelection);
+  const showMainNav = draft && !showSettings && !showProtoManager && Boolean(activeSelection);
 
   function updateDraft(updater) {
     setDraft((prev) => {
@@ -634,6 +630,7 @@ export default function App() {
       setDirty(false);
       setSelectedApiId(null);
       setShowSettings(false);
+      setShowProtoManager(false);
       setMessage('项目已创建');
       await refresh();
     } catch (err) {
@@ -817,11 +814,72 @@ export default function App() {
     setSelectedGrpcMockId(type === 'grpc-mock' ? itemId : null);
     setSelectedGrpcClientId(type === 'grpc-client' ? itemId : null);
     setShowSettings(false);
+    setShowProtoManager(false);
     setMainView('edit');
   }
 
-  function addGrpcItem(type, folderId) {
-    const item = { ...(type === 'grpc-mock' ? emptyGrpcMock() : emptyGrpcClient()), folderId: folderId || undefined };
+  async function addGrpcItem(type, folderId) {
+    let availableMethods = [];
+    if (draft?.protos?.length) {
+      setBusy(true);
+      try {
+        const inspected = await Promise.all((draft.protos || []).map(async (proto) => {
+          try {
+            const result = await api.inspectGrpc({ proto: proto.content, protoFilename: proto.filename });
+            return { proto, services: result.services || [] };
+          } catch {
+            return { proto, services: [] };
+          }
+        }));
+        availableMethods = inspected.flatMap(({ proto, services }) => services.flatMap((service) => (
+          sortGrpcMethods(service.methods || []).map((method) => ({
+            protoId: proto.id,
+            protoName: proto.name || proto.filename,
+            packageName: service.packageName,
+            serviceName: service.serviceName,
+            methodName: method.name,
+            requestStream: method.requestStream,
+            responseStream: method.responseStream,
+          }))
+        )));
+      } finally {
+        setBusy(false);
+      }
+    }
+
+    let selectedMethod = null;
+    if (availableMethods.length) {
+      const choice = await selectDialog({
+        title: '新建 ' + folderConfig[type].itemLabel,
+        message: '创建空白方法，或选择项目 Proto 中需要的方法。',
+        options: [
+          { value: 'manual', label: '空白方法（稍后关联 Proto）' },
+          ...availableMethods.map((method, index) => ({
+            value: 'method:' + index,
+            label: method.protoName + ' · ' + [method.packageName, method.serviceName].filter(Boolean).join('.') + '/' + method.methodName,
+          })),
+        ],
+        defaultValue: 'manual',
+      });
+      if (choice === null) return;
+      if (choice.startsWith('method:')) selectedMethod = availableMethods[Number(choice.slice(7))];
+    }
+
+    const item = {
+      ...(type === 'grpc-mock' ? emptyGrpcMock() : emptyGrpcClient()),
+      folderId: folderId || undefined,
+    };
+    if (selectedMethod) {
+      item.name = selectedMethod.methodName;
+      if (type === 'grpc-mock') item.enabled = true;
+      item.protoId = selectedMethod.protoId;
+      item.packageName = selectedMethod.packageName;
+      item.serviceName = selectedMethod.serviceName;
+      item.methodName = selectedMethod.methodName;
+      if (type === 'grpc-mock') item.response = selectedMethod.responseStream ? '[]' : '{}';
+      else item.request = selectedMethod.requestStream ? '[]' : '{}';
+    }
+
     const cfg = folderConfig[type];
     updateDraft((d) => {
       d[cfg.itemsKey] = d[cfg.itemsKey] || [];
@@ -880,6 +938,7 @@ export default function App() {
     setSelectedGrpcMockId(null);
     setSelectedGrpcClientId(null);
     setShowSettings(false);
+    setShowProtoManager(false);
     setMainView('edit');
   }
 
@@ -896,6 +955,7 @@ export default function App() {
     setSelectedGrpcMockId(null);
     setSelectedGrpcClientId(null);
     setShowSettings(false);
+    setShowProtoManager(false);
     setMainView('edit');
   }
 
@@ -922,6 +982,7 @@ export default function App() {
     setSelectedGrpcMockId(null);
     setSelectedGrpcClientId(null);
     setShowSettings(false);
+    setShowProtoManager(false);
     setMainView('edit');
     notify('已复制 API');
   }
@@ -961,6 +1022,7 @@ export default function App() {
     setSelectedGrpcMockId(null);
     setSelectedGrpcClientId(null);
     setShowSettings(false);
+    setShowProtoManager(false);
     setMainView('edit');
     notify('已复制 API');
   }
@@ -979,6 +1041,32 @@ export default function App() {
     }
     setSelectedProjectId(projectId);
     setShowSettings(true);
+    setShowProtoManager(false);
+  }
+
+  function openProtoManager() {
+    setShowSettings(false);
+    setShowProtoManager(true);
+  }
+
+  async function deleteProto(protoId) {
+    const references = [...(draft?.grpcMocks || []), ...(draft?.grpcClients || [])]
+      .filter((item) => item.protoId === protoId);
+    const confirmed = await confirmDialog({
+      title: '删除 Proto',
+      message: references.length
+        ? '该 Proto 已关联 ' + references.length + ' 个方法。删除后这些方法将解除关联，是否继续？'
+        : '确定删除该 Proto？',
+      danger: true,
+      confirmLabel: '删除',
+    });
+    if (!confirmed) return;
+    updateDraft((project) => {
+      project.protos = (project.protos || []).filter((proto) => proto.id !== protoId);
+      for (const item of [...(project.grpcMocks || []), ...(project.grpcClients || [])]) {
+        if (item.protoId === protoId) item.protoId = undefined;
+      }
+    });
   }
 
   async function importProjectFile(file) {
@@ -993,6 +1081,7 @@ export default function App() {
       if (imported?.id) {
         setSelectedProjectId(imported.id);
         setShowSettings(false);
+        setShowProtoManager(false);
       }
       setMessage('项目已导入');
       await refresh();
@@ -1052,7 +1141,13 @@ export default function App() {
   const itemExportKinds = { api: 'mock-api', 'client-api': 'api', 'grpc-mock': 'grpc-mock', 'grpc-client': 'grpc-client' };
 
   function itemExportPayload(type, item) {
-    return { kind: itemExportKinds[type], version: 1, item };
+    if (!type.startsWith('grpc-')) return { kind: itemExportKinds[type], version: 1, item };
+    return {
+      kind: itemExportKinds[type],
+      version: 2,
+      item,
+      proto: (draft?.protos || []).find((entry) => entry.id === item.protoId),
+    };
   }
 
   function exportItem(type, item) {
@@ -1069,89 +1164,52 @@ export default function App() {
     notify('接口已导出');
   }
 
-  async function importProtoFile(type, file) {
-    if (!file) return;
-    if (!type.startsWith('grpc-')) throw new Error('Proto 只能导入到 gRPC 分组');
-    const proto = await file.text();
-    const inspected = await api.inspectGrpc({ proto, protoFilename: file.name });
-    const cfg = folderConfig[type];
-    const folders = structuredClone(draft?.[cfg.foldersKey] || []);
-    const items = structuredClone(draft?.[cfg.itemsKey] || []);
-    let added = 0;
-    let updated = 0;
-    let firstItemId = null;
-
-    for (const service of inspected.services || []) {
-      let folder = folders.find((candidate) => !candidate.parentId && candidate.name === service.serviceName);
-      if (!folder) {
-        folder = emptyFolder(service.serviceName);
-        folders.push(folder);
-      }
-      for (const method of service.methods || []) {
-        let item = items.find((candidate) => (
-          candidate.packageName === service.packageName
-          && candidate.serviceName === service.serviceName
-          && candidate.methodName === method.name
-        ));
-        if (item) {
-          item.name = method.name;
-          item.proto = proto;
-          item.protoFilename = file.name;
-          item.folderId = folder.id;
-          updated += 1;
-        } else {
-          const base = type === 'grpc-mock' ? emptyGrpcMock() : emptyGrpcClient();
-          item = {
-            ...base,
-            id: crypto.randomUUID(),
-            name: method.name,
-            proto,
-            protoFilename: file.name,
-            packageName: service.packageName,
-            serviceName: service.serviceName,
-            methodName: method.name,
-            ...(type === 'grpc-mock' ? { response: method.responseStream ? '[]' : '{}' } : { request: method.requestStream ? '[]' : '{}' }),
-            folderId: folder.id,
-          };
-          items.push(item);
-          added += 1;
-        }
-        if (!firstItemId) firstItemId = item.id;
-      }
-    }
-
-    if (!firstItemId) throw new Error('Proto 中未找到可导入的 gRPC 方法');
-    updateDraft((next) => {
-      next[cfg.foldersKey] = folders;
-      next[cfg.itemsKey] = items;
-      return next;
-    });
-    selectItem(type, firstItemId);
-    notify('Proto 导入完成：新增 ' + added + '，更新 ' + updated);
-  }
-
   async function importItemFile(type, file, folderId) {
     if (!file) return;
     try {
       const raw = await file.text();
-      if (file.name?.toLowerCase().endsWith('.proto')) {
-        await importProtoFile(type, file);
-        return;
-      }
       const parsed = yaml.load(raw);
       const item = parsed?.item || parsed;
       if (!item || typeof item !== 'object') throw new Error('未找到接口配置');
       if (parsed?.kind && parsed.kind !== itemExportKinds[type]) throw new Error('接口类型与当前分组不匹配');
       if (type === 'api' && (!item.match || !item.response)) throw new Error('不是有效的 HTTP Mock 配置');
       if (type === 'client-api' && !('url' in item)) throw new Error('不是有效的 HTTP Client 配置');
-      if (type.startsWith('grpc-') && !('proto' in item)) throw new Error('不是有效的 gRPC 配置');
       const imported = structuredClone(item);
       imported.id = crypto.randomUUID();
       imported.name = imported.name ? imported.name + ' Copy' : 'Imported API';
       imported.folderId = folderId || undefined;
       const cfg = folderConfig[type];
+      let protoToAdd = null;
+
+      if (type.startsWith('grpc-')) {
+        const bundledProto = parsed?.proto && typeof parsed.proto === 'object' ? parsed.proto : null;
+        const legacyContent = typeof imported.proto === 'string' ? imported.proto : '';
+        const protoContent = bundledProto?.content || legacyContent;
+        if (protoContent) {
+          const existing = (draft.protos || []).find((proto) => proto.content === protoContent);
+          if (existing) {
+            imported.protoId = existing.id;
+          } else {
+            protoToAdd = {
+              id: crypto.randomUUID(),
+              name: bundledProto?.name || (bundledProto?.filename || imported.protoFilename || 'Imported Proto').replace(/\.proto$/i, ''),
+              filename: bundledProto?.filename || imported.protoFilename || 'service.proto',
+              content: protoContent,
+            };
+            imported.protoId = protoToAdd.id;
+          }
+        } else if (imported.protoId && !(draft.protos || []).some((proto) => proto.id === imported.protoId)) {
+          throw new Error('gRPC 配置引用的 Proto 不存在');
+        } else {
+          imported.protoId = undefined;
+        }
+        delete imported.proto;
+        delete imported.protoFilename;
+      }
+
       updateDraft((d) => {
         d[cfg.itemsKey] = d[cfg.itemsKey] || [];
+        if (protoToAdd) d.protos = [...(d.protos || []), protoToAdd];
         d[cfg.itemsKey].push(imported);
         return d;
       });
@@ -1167,7 +1225,7 @@ export default function App() {
     const activeId = type === 'api' ? selectedApiId
       : type === 'client-api' ? selectedClientApiId
         : type === 'grpc-mock' ? selectedGrpcMockId : selectedGrpcClientId;
-    const active = activeId === item.id && !showSettings;
+    const active = activeId === item.id && !showSettings && !showProtoManager;
     const method = type === 'api' ? item.match?.method : type === 'client-api' ? item.method : 'RPC';
     const select = () => selectItem(type, item.id);
     const rename = () => type === 'api' ? renameApi(item.id)
@@ -1224,7 +1282,7 @@ export default function App() {
           onDrop={(e) => handleItemDrop(e, type, folder.id)}
           onContextMenu={(e) => openContextMenu(e, [
             { label: `新建${cfg.itemLabel}`, onClick: () => addItem(type, folder.id) },
-            { label: '导入接口', fileInput: true, accept: type.startsWith('grpc-') ? '.proto,.yaml,.yml,.json' : '.yaml,.yml,.json', onFile: (file) => importItemFile(type, file, folder.id) },
+            { label: '导入接口', fileInput: true, accept: '.yaml,.yml,.json', onFile: (file) => importItemFile(type, file, folder.id) },
             { label: '新建子文件夹', onClick: () => addFolder(type, folder.id) },
             { label: '重命名', onClick: () => renameFolder(type, folder.id) },
             { label: '复制', onClick: () => copyFolder(type, folder.id) },
@@ -1326,21 +1384,7 @@ export default function App() {
             </label>
             <button type="button" className="icon-btn sm" title="新建文件夹" aria-label="新建文件夹" onClick={() => addFolder(type)}><FolderPlusIcon /></button>
             <button type="button" className="icon-btn sm" title={'新建 ' + cfg.itemLabel} aria-label={'新建 ' + cfg.itemLabel} onClick={() => addItem(type)}>+</button>
-            {isGrpc && (
-              <label className="nav-proto-import" title="导入 Proto 并按 Service 建文件夹">
-                <span>.proto</span>
-                <input
-                  type="file"
-                  accept=".proto"
-                  hidden
-                  onChange={(e) => {
-                    const file = e.target.files?.[0];
-                    if (file) importProtoFile(type, file).catch((error) => notify(error.message || 'Proto 导入失败', 'error'));
-                    e.target.value = '';
-                  }}
-                />
-              </label>
-            )}
+            {isGrpc && <button type="button" className="nav-proto-import" title="管理项目 Proto" onClick={openProtoManager}>Proto</button>}
           </div>
         </div>
         {renderFolderSection(type)}
@@ -1443,6 +1487,7 @@ export default function App() {
                 setCollapsedProjects((prev) => ({ ...prev, [p.id]: false }));
                 if (selectedProjectId === p.id) {
                   setShowSettings(false);
+                  setShowProtoManager(false);
                   return;
                 }
                 projectOpenIntentRef.current = null;
@@ -1545,6 +1590,15 @@ export default function App() {
                   }}
                 />
               </div>
+            ) : showProtoManager ? (
+              <ProtoManager
+                draft={draft}
+                onChange={updateDraft}
+                onSave={saveDraft}
+                onDelete={deleteProto}
+                onClose={() => setShowProtoManager(false)}
+                busy={busy}
+              />
             ) : mainView === 'record' && activeSelection ? (
               <RequestLogPanel
                 records={logRecords}
@@ -1562,6 +1616,7 @@ export default function App() {
                 mode="client"
                 openVersion={grpcOpenVersion}
                 projectId={draft.id}
+                protos={draft.protos}
                 item={selectedGrpcClient}
                 itemIndex={selectedGrpcClientIndex}
                 environments={draft.environments}
@@ -1572,6 +1627,7 @@ export default function App() {
                 onSave={saveDraft}
                 onSent={() => loadRequests(draft.id)}
                 busy={busy}
+                onManageProtos={openProtoManager}
               />
             ) : selectedGrpcMock ? (
               <GrpcEditor
@@ -1579,12 +1635,14 @@ export default function App() {
                 mode="mock"
                 openVersion={grpcOpenVersion}
                 projectId={draft.id}
+                protos={draft.protos}
                 item={selectedGrpcMock}
                 itemIndex={selectedGrpcMockIndex}
                 onChange={updateDraft}
                 onRemove={() => deleteGrpcItem('grpc-mock', selectedGrpcMock.id)}
                 onSave={saveDraft}
                 busy={busy}
+                onManageProtos={openProtoManager}
               />
             ) : selectedClientApi ? (
               <ClientApiEditor

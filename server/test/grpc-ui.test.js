@@ -78,3 +78,13 @@ test('findMatchingGrpcItem restores the preferred duplicate method item', () => 
   assert.equal(findMatchingGrpcItem(clientItems, serverItem, 'client-saved')?.id, 'client-saved');
   assert.equal(findMatchingGrpcItem(clientItems, serverItem, 'client-saved')?.request, '{"value":2}');
 });
+
+
+test('findMatchingGrpcItem prefers the same shared Proto for duplicate RPC paths', () => {
+  const source = { protoId: 'proto-b', packageName: 'demo', serviceName: 'Greeter', methodName: 'Ping' };
+  const items = [
+    { id: 'a', protoId: 'proto-a', packageName: 'demo', serviceName: 'Greeter', methodName: 'Ping' },
+    { id: 'b', protoId: 'proto-b', packageName: 'demo', serviceName: 'Greeter', methodName: 'Ping' },
+  ];
+  assert.equal(findMatchingGrpcItem(items, source)?.id, 'b');
+});

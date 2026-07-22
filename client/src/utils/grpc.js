@@ -42,6 +42,16 @@ export function findMatchingGrpcItem(items = [], source, preferredId) {
     && sameText(preferred.methodName, source.methodName)
   )) return preferred;
 
+  const sameProto = source.protoId
+    ? items.find((candidate) => (
+      candidate.protoId === source.protoId
+      && sameText(candidate.packageName, source.packageName)
+      && sameText(candidate.serviceName, source.serviceName)
+      && sameText(candidate.methodName, source.methodName)
+    ))
+    : null;
+  if (sameProto) return sameProto;
+
   const exact = items.find((candidate) => (
     sameText(candidate.packageName, source.packageName)
     && sameText(candidate.serviceName, source.serviceName)

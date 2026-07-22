@@ -74,8 +74,8 @@ export function resolveProjectActivity(project, activity = {}) {
     }
   }
 
-  const location = activity?.location === 'settings'
-    ? 'settings'
+  const location = activity?.location === 'settings' || activity?.location === 'protos'
+    ? activity.location
     : itemId ? 'item' : 'empty';
 
   return {

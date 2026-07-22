@@ -1,6 +1,7 @@
 import { GrpcEngine } from './grpcEngine.js';
 import { inspectGrpcProto, invokeGrpc } from './grpcRuntime.js';
 import { MockEngine } from './mockEngine.js';
+import { resolveProjectGrpcConfig } from './utils/grpcProtos.js';
 
 export class RuntimeEngine {
   constructor(store) {
@@ -41,7 +42,12 @@ export class RuntimeEngine {
 
     const started = Date.now();
     try {
-      const effectiveClient = { ...client, ...overrides, id: client.id, name: client.name };
+      const effectiveClient = resolveProjectGrpcConfig(project, {
+        ...client,
+        ...overrides,
+        id: client.id,
+        name: client.name,
+      });
       const result = await invokeGrpc(effectiveClient, overrides);
       const record = {
         id: `${Date.now()}-grpc-client-${Math.random().toString(36).slice(2, 8)}`,

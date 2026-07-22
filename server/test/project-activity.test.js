@@ -71,3 +71,8 @@ test('project activity storage is isolated by project id', () => {
   assert.equal(readProjectActivity('project-a', storage), null);
   assert.ok(storage.getItem(PROJECT_ACTIVITY_STORAGE_KEY));
 });
+
+
+test('project activity restores the Proto management page', () => {
+  assert.equal(resolveProjectActivity(project, { location: 'protos' }).location, 'protos');
+});

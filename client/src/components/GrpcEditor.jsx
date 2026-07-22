@@ -90,6 +90,7 @@ export default function GrpcEditor({
   mode,
   openVersion,
   projectId,
+  protos,
   item,
   itemIndex,
   environments,
@@ -100,6 +101,7 @@ export default function GrpcEditor({
   onSave,
   onSent,
   busy,
+  onManageProtos,
 }) {
   const isMock = mode === 'mock';
   const collectionKey = isMock ? 'grpcMocks' : 'grpcClients';
@@ -116,6 +118,10 @@ export default function GrpcEditor({
     setTab(isMock ? 'mock' : 'body');
   }, [openVersion, isMock]);
 
+  const selectedProto = useMemo(
+    () => (protos || []).find((proto) => proto.id === item.protoId) || null,
+    [protos, item.protoId]
+  );
   const selectedService = useMemo(() => services.find((service) => (
     service.packageName === item.packageName && service.serviceName === item.serviceName
   )) || services.find((service) => service.serviceName === item.serviceName), [services, item.packageName, item.serviceName]);
@@ -181,11 +187,14 @@ export default function GrpcEditor({
   }
 
   async function inspectProto({ silent = false } = {}) {
-    if (!String(item.proto || '').trim()) return;
+    if (!String(selectedProto?.content || '').trim()) return;
     setParsing(true);
     if (!silent) setError('');
     try {
-      const response = await api.inspectGrpc({ proto: item.proto, protoFilename: item.protoFilename });
+      const response = await api.inspectGrpc({
+        proto: selectedProto.content,
+        protoFilename: selectedProto.filename,
+      });
       applyParsedServices(response.services || []);
     } catch (inspectError) {
       if (!silent) setError(inspectError.message);
@@ -195,7 +204,7 @@ export default function GrpcEditor({
   }
 
   useEffect(() => {
-    if (!String(item.proto || '').trim()) {
+    if (!String(selectedProto?.content || '').trim()) {
       setServices([]);
       return undefined;
     }
@@ -203,54 +212,38 @@ export default function GrpcEditor({
     const timer = window.setTimeout(async () => {
       setParsing(true);
       try {
-        const response = await api.inspectGrpc({ proto: item.proto, protoFilename: item.protoFilename });
-        if (active) applyParsedServices(response.services || []);
-      } catch {
-        if (active) setServices([]);
+        const response = await api.inspectGrpc({
+          proto: selectedProto.content,
+          protoFilename: selectedProto.filename,
+        });
+        if (active) {
+          applyParsedServices(response.services || []);
+          setError('');
+        }
+      } catch (inspectError) {
+        if (active) {
+          setServices([]);
+          setError(inspectError.message);
+        }
       } finally {
         if (active) setParsing(false);
       }
-    }, 650);
+    }, 350);
     return () => {
       active = false;
       window.clearTimeout(timer);
     };
-  }, [item.proto, item.protoFilename]);
+  }, [selectedProto?.content, selectedProto?.filename]);
 
-  async function importProto(file) {
-    if (!file) return;
-    setParsing(true);
+  function changeProto(protoId) {
+    setServices([]);
     setError('');
-    try {
-      const proto = await file.text();
-      const response = await api.inspectGrpc({ proto, protoFilename: file.name });
-      const nextServices = response.services || [];
-      const service = nextServices[0];
-      const method = sortGrpcMethods(service?.methods || [])[0];
-      setServices(nextServices);
-      patch((target) => {
-        target.proto = proto;
-        target.protoFilename = file.name;
-        if (service && method) {
-          target.packageName = service.packageName;
-          target.serviceName = service.serviceName;
-          target.methodName = method.name;
-        }
-      });
-      setTab('definition');
-    } catch (importError) {
-      setError(importError.message);
-    } finally {
-      setParsing(false);
-    }
-  }
-
-  function handleProtoPaste(event) {
-    const protoFile = [...(event.clipboardData?.files || [])]
-      .find((file) => file.name?.toLowerCase().endsWith('.proto'));
-    if (!protoFile) return;
-    event.preventDefault();
-    importProto(protoFile);
+    patch((target) => {
+      target.protoId = protoId || undefined;
+      target.packageName = '';
+      target.serviceName = '';
+      target.methodName = '';
+    });
   }
 
   async function sendRequest() {
@@ -273,7 +266,6 @@ export default function GrpcEditor({
     <>
       <div className="tabs">
         <button type="button" className={`tab ${tab === 'definition' ? 'active' : ''}`} onClick={() => setTab('definition')}>服务定义</button>
-        <button type="button" className={`tab ${tab === 'proto' ? 'active' : ''}`} onClick={() => setTab('proto')}>Proto</button>
         <button type="button" className={`tab ${tab === 'options' ? 'active' : ''}`} onClick={() => setTab('options')}>高级</button>
         {isMock && <button type="button" className={`tab ${tab === 'mock' ? 'active' : ''}`} onClick={() => setTab('mock')}>Mock</button>}
         {!isMock && <button type="button" className={`tab ${tab === 'body' ? 'active' : ''}`} onClick={() => setTab('body')}>Body</button>}
@@ -283,8 +275,21 @@ export default function GrpcEditor({
         <div className="panel grpc-definition-panel">
           <section>
             <div className="grpc-section-head">
+              <h4>Proto</h4>
+              <button type="button" className="ghost sm" onClick={onManageProtos}>管理 Proto</button>
+            </div>
+            <select className="field mono-field" value={item.protoId || ''} onChange={(event) => changeProto(event.target.value)}>
+              <option value="">未关联 Proto</option>
+              {(protos || []).map((proto) => (
+                <option value={proto.id} key={proto.id}>{proto.name || proto.filename} · {proto.filename}</option>
+              ))}
+            </select>
+            {selectedProto && <p className="hint section-hint">共享自项目 Proto 管理；修改后所有关联方法同步生效。</p>}
+          </section>
+          <section>
+            <div className="grpc-section-head">
               <h4>Service</h4>
-              <button type="button" className="ghost sm" disabled={parsing || !item.proto} onClick={() => inspectProto()}>{parsing ? '解析中…' : '重新解析'}</button>
+              <button type="button" className="ghost sm" disabled={parsing || !selectedProto} onClick={() => inspectProto()}>{parsing ? '解析中…' : '重新解析'}</button>
             </div>
             {services.length > 0 ? (
               <div className="grpc-select-grid grpc-service-grid">
@@ -334,7 +339,7 @@ export default function GrpcEditor({
                     : <div className="record-empty grpc-schema-empty">该请求消息没有参数</div>}
                 </div>
               ) : (
-                <div className="record-empty grpc-schema-empty">请先导入 Proto 并选择其中的方法</div>
+                <div className="record-empty grpc-schema-empty">请先关联项目 Proto 并选择其中的方法</div>
               )}
             </section>
             <section className="grpc-request-json-panel">
@@ -378,7 +383,7 @@ export default function GrpcEditor({
                     : <div className="record-empty grpc-schema-empty">该响应消息没有参数</div>}
                 </div>
               ) : (
-                <div className="record-empty grpc-schema-empty">请先导入 Proto 并选择其中的方法</div>
+                <div className="record-empty grpc-schema-empty">请先关联项目 Proto 并选择其中的方法</div>
               )}
             </section>
             <section className="grpc-request-json-panel">
@@ -405,32 +410,6 @@ export default function GrpcEditor({
             </section>
           </div>
           {error && <div className="grpc-error">{error}</div>}
-        </div>
-      )}
-
-      {tab === 'proto' && (
-        <div className="panel fill-panel">
-          <div className="grpc-section-head">
-            <div>
-              <strong>{item.protoFilename || 'service.proto'}</strong>
-              <p className="hint">可粘贴 Proto 文本或 Proto 文件；停止输入后自动解析 Service 和 Method。</p>
-            </div>
-            <div className="grpc-proto-actions">
-              <span className={`grpc-parse-state ${parsing ? 'busy' : ''}`}>{parsing ? '解析中…' : services.length ? `已解析 ${services.length} 个 Service` : '等待 Proto'}</span>
-              <label className="ghost file-btn">导入 .proto<input type="file" accept=".proto" hidden onChange={(e) => importProto(e.target.files?.[0])} /></label>
-            </div>
-          </div>
-          <textarea
-            className="code-input fill"
-            value={item.proto || ''}
-            spellCheck={false}
-            placeholder={'粘贴 Proto 内容，或粘贴/导入 .proto 文件\n\nsyntax = "proto3";\npackage demo;'}
-            onPaste={handleProtoPaste}
-            onChange={(e) => {
-              patch((target) => { target.proto = e.target.value; });
-              setServices([]);
-            }}
-          />
         </div>
       )}
 
@@ -574,7 +553,7 @@ export default function GrpcEditor({
           />
         </div>
         <div className="url-actions">
-          {!isMock && <button type="button" className="primary" disabled={sending || busy || !item.proto} onClick={sendRequest}>{sending ? '调用中…' : '调用'}</button>}
+          {!isMock && <button type="button" className="primary" disabled={sending || busy || !selectedMethod} onClick={sendRequest}>{sending ? '调用中…' : '调用'}</button>}
           <button type="button" className={isMock ? 'primary' : 'ghost'} onClick={onSave} disabled={busy}>保存</button>
           <button type="button" className="ghost danger" onClick={onRemove}>删除</button>
         </div>
