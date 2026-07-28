@@ -16,6 +16,9 @@ export default function KVBulkModal({ open, rows, onConfirm, onClose }) {
 
   if (!open) return null;
 
+  const separator = mode === 'comma' ? ',' : mode === 'equals' ? '=' : ':';
+  const separatorLabel = mode === 'comma' ? '英文逗号(,)' : mode === 'equals' ? '等号(=)' : '英文冒号(:)';
+
   function switchMode(nextMode) {
     if (nextMode === mode) return;
     const parsed = parseBulkText(text, mode);
@@ -53,9 +56,16 @@ export default function KVBulkModal({ open, rows, onConfirm, onClose }) {
             >
               冒号模式
             </button>
+            <button
+              type="button"
+              className={mode === 'equals' ? 'active' : ''}
+              onClick={() => switchMode('equals')}
+            >
+              等号模式
+            </button>
           </div>
           <span className="bulk-hint">
-            格式：{mode === 'comma' ? '参数名,参数值' : '参数名:参数值'}
+            格式：参数名{separator}参数值
           </span>
         </div>
 
@@ -64,13 +74,11 @@ export default function KVBulkModal({ open, rows, onConfirm, onClose }) {
           value={text}
           spellCheck={false}
           onChange={(e) => setText(e.target.value)}
-          placeholder={mode === 'comma' ? 'key,value' : 'key:value'}
+          placeholder={'key' + separator + 'value'}
         />
 
         <p className="bulk-footer">
-          {mode === 'comma'
-            ? '字段之间以英文逗号(,)分隔，多条记录以换行分隔'
-            : '字段之间以英文冒号(:)分隔，多条记录以换行分隔'}
+          字段之间以{separatorLabel}分隔，多条记录以换行或英文分号(;)分隔
         </p>
 
         <div className="modal-actions">

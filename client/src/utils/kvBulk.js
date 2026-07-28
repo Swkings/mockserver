@@ -1,5 +1,5 @@
 export function rowsToBulkText(rows, mode = 'colon') {
-  const sep = mode === 'comma' ? ',' : ':';
+  const sep = mode === 'comma' ? ',' : mode === 'equals' ? '=' : ':';
   return (rows || [])
     .filter((r) => r.key?.trim())
     .map((r) => `${r.key}${sep}${r.value ?? ''}`)
@@ -7,10 +7,10 @@ export function rowsToBulkText(rows, mode = 'colon') {
 }
 
 export function parseBulkText(text, mode = 'colon') {
-  const sep = mode === 'comma' ? ',' : ':';
+  const sep = mode === 'comma' ? ',' : mode === 'equals' ? '=' : ':';
   const rows = [];
 
-  for (const rawLine of String(text || '').split(/\r?\n/)) {
+  for (const rawLine of String(text || '').split(/\r?\n|;/)) {
     const line = rawLine.trim();
     if (!line) continue;
 
