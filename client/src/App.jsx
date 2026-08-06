@@ -67,6 +67,8 @@ const emptyClientApi = () => ({
   headers: { 'Content-Type': 'application/json' },
   useProjectHeaders: true,
   useProjectCookies: true,
+  proxy: false,
+  insecureTls: false,
   body: '',
   allowGetBody: false,
   description: '',

@@ -349,6 +349,8 @@ export default function ClientApiEditor({
         allowGetBody: clientApi.allowGetBody === true,
         useProjectHeaders,
         useProjectCookies,
+        proxy: clientApi.proxy === true,
+        insecureTls: clientApi.insecureTls === true,
       });
       setSendResult(result);
       setRightTab('response');
@@ -826,6 +828,28 @@ export default function ClientApiEditor({
         实际请求：<code>{resolvedUrl}</code>
       </p>
 
+      <label className="inherit-switch client-proxy-switch" title="Uses HTTP_PROXY, HTTPS_PROXY and NO_PROXY from the server environment">
+        <input
+          type="checkbox"
+          checked={clientApi.proxy === true}
+          onChange={(e) => patch((a) => { a.proxy = e.target.checked; })}
+        />
+        <span>Proxy</span>
+      </label>
+      <p className="hint proxy-switch-hint">
+        {clientApi.proxy === true ? "Uses the server proxy environment" : "Direct connection; proxy disabled by default"}
+      </p>
+      <label className="inherit-switch client-tls-switch" title="Disables TLS certificate verification for this API">
+        <input
+          type="checkbox"
+          checked={clientApi.insecureTls === true}
+          onChange={(e) => patch((a) => { a.insecureTls = e.target.checked; })}
+        />
+        <span>Skip TLS verify</span>
+      </label>
+      <p className="hint tls-switch-hint">
+        {clientApi.insecureTls === true ? "TLS certificate verification is disabled" : "TLS certificate verification is enabled by default"}
+      </p>
       <SplitPane
         className="editor-split"
         rightHeader={rightHeader}

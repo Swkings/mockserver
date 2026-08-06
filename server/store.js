@@ -273,6 +273,8 @@ export class Store {
       headers: clientApi.headers || { 'Content-Type': 'application/json' },
       useProjectHeaders: clientApi.useProjectHeaders !== false,
       useProjectCookies: clientApi.useProjectCookies !== false,
+      proxy: clientApi.proxy === true,
+      insecureTls: clientApi.insecureTls === true,
       body: clientApi.body ?? '',
       bodyPresets: normalizeBodyPresets(clientApi.bodyPresets),
       requestSchemaLanguage: clientApi.requestSchemaLanguage || undefined,

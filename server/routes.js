@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { resolveClientApiUrl } from './utils/environment.js';
+import { Agent, EnvHttpProxyAgent } from 'undici';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CONFIGS_DIR = path.resolve(__dirname, '../configs');
@@ -59,6 +60,43 @@ function headersWithoutCookie(headers = {}) {
   delete out.Cookie;
   delete out.cookie;
   return out;
+}
+
+let directHttpAgent;
+let insecureDirectHttpAgent;
+let proxyHttpAgent;
+let proxyEnvironmentKey;
+
+function currentProxyEnvironmentKey() {
+  return [
+    process.env.HTTP_PROXY || "",
+    process.env.HTTPS_PROXY || "",
+    process.env.ALL_PROXY || "",
+    process.env.NO_PROXY || "",
+    process.env.http_proxy || "",
+    process.env.https_proxy || "",
+    process.env.all_proxy || "",
+    process.env.no_proxy || "",
+  ].join("\u0000");
+}
+
+function getHttpDispatcher(useProxy = false, insecureTls = false) {
+  if (!useProxy) {
+    if (insecureTls) {
+      insecureDirectHttpAgent ||= new Agent({ connect: { rejectUnauthorized: false } });
+      return insecureDirectHttpAgent;
+    }
+    directHttpAgent ||= new Agent();
+    return directHttpAgent;
+  }
+
+  const environmentKey = currentProxyEnvironmentKey() + (insecureTls ? "-insecure" : "-secure");
+  if (!proxyHttpAgent || proxyEnvironmentKey !== environmentKey) {
+    proxyHttpAgent?.close().catch(() => {});
+    proxyHttpAgent = new EnvHttpProxyAgent(insecureTls ? { requestTls: { rejectUnauthorized: false } } : {});
+    proxyEnvironmentKey = environmentKey;
+  }
+  return proxyHttpAgent;
 }
 
 export function createRoutes(store, engine) {
@@ -252,11 +290,15 @@ export function createRoutes(store, engine) {
     const shouldSendBody = method === 'GET' ? allowGetBody && hasBody : hasBody;
     const actualBody = shouldSendBody ? body : '';
 
+    const useProxy = req.body.proxy === undefined ? clientApi.proxy === true : req.body.proxy === true;
+    const insecureTls = req.body.insecureTls === undefined ? clientApi.insecureTls === true : req.body.insecureTls === true;
+
     const started = Date.now();
     try {
       const response = await fetch(url, {
         method,
         headers,
+        dispatcher: getHttpDispatcher(useProxy, insecureTls),
         body: method === 'HEAD' ? undefined : (shouldSendBody ? body : undefined),
       });
       const text = await response.text();
@@ -287,7 +329,9 @@ export function createRoutes(store, engine) {
         durationMs: record.durationMs,
       });
     } catch (err) {
-      res.status(502).json({ error: err.message });
+      const errorCode = err.cause?.code;
+      const errorMessage = errorCode ? err.message + " (" + errorCode + ")" : err.message;
+      res.status(502).json({ error: errorMessage });
     }
   });
 
