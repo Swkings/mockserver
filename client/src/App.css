@@ -1885,3 +1885,44 @@ button.ghost.danger { color: var(--danger); border-color: var(--danger-border); 
   .proto-editor-grid { grid-template-columns: 1fr; grid-template-rows: minmax(280px, 1fr) minmax(180px, 0.55fr); }
   .proto-method-preview { border-left: 0; border-top: 1px solid var(--border); }
 }
+
+
+/* Compact HTTP client editor layout */
+.editor-page { padding: 14px 18px 0; }
+.editor-head { margin: -14px -18px 10px; padding: 10px 18px; gap: 10px; }
+.editor-head > .env-toolbar {
+  flex: 0 1 min(560px, 52%); min-width: 0; margin: 0; padding: 0;
+  border: 0; border-radius: 0; background: transparent;
+}
+.editor-head .env-summary { display: none; }
+.editor-head .env-controls { width: 100%; }
+.editor-head .env-picker { min-width: 0; flex: 1; }
+.editor-head .env-picker-trigger { min-height: 32px; padding: 5px 8px; border-radius: 6px; }
+.url-bar { margin-bottom: 10px; padding: 6px; }
+.tabs { margin-bottom: 8px; }
+.tab { padding: 6px 10px; font-size: 0.8rem; }
+.panel section { margin-bottom: 12px; }
+.editor-split { margin-top: 0; }
+.split-left { padding-bottom: 0; }
+.side-panel { gap: 8px; }
+.settings-panel { max-width: 640px; }
+.settings-panel section { margin-bottom: 0; }
+.settings-panel .setting-option { margin-bottom: 6px; }
+.settings-panel .setting-hint { margin: -2px 0 12px 2px; }
+@media (max-width: 900px) {
+  .editor-head { align-items: flex-start; flex-wrap: wrap; }
+  .editor-head > .env-toolbar { flex-basis: 100%; }
+}
+
+
+/* Let the main request panels flow into the content area bottom */
+.grpc-schema-panel {
+  border-bottom: 0;
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
+}
+.grpc-request-json-panel .code-input {
+  border-bottom: 0;
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
+}

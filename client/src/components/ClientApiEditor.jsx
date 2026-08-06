@@ -370,6 +370,7 @@ export default function ClientApiEditor({
           { id: 'headers', label: 'Headers', count: headersCount },
           { id: 'cookies', label: 'Cookies', count: cookiesCount },
           { id: 'body', label: 'Body', count: 0 },
+          { id: 'setting', label: 'Setting', count: 0 },
         ].map((t) => (
           <button key={t.id} type="button" className={`tab ${tab === t.id ? 'active' : ''}`} onClick={() => setTab(t.id)}>
             <span>{t.label}</span>
@@ -590,6 +591,35 @@ export default function ClientApiEditor({
           </div>
         </div>
       )}
+      {tab === "setting" && (
+        <div className="panel settings-panel">
+          <section>
+            <h4>Request Settings</h4>
+            <label className="inherit-switch setting-option" title="Uses HTTP_PROXY, HTTPS_PROXY and NO_PROXY from the server environment">
+              <input
+                type="checkbox"
+                checked={clientApi.proxy === true}
+                onChange={(e) => patch((a) => { a.proxy = e.target.checked; })}
+              />
+              <span>Proxy</span>
+            </label>
+            <p className="hint setting-hint">
+              {clientApi.proxy === true ? "Uses the server proxy environment" : "Direct connection; proxy disabled by default"}
+            </p>
+            <label className="inherit-switch setting-option" title="Disables TLS certificate verification for this API">
+              <input
+                type="checkbox"
+                checked={clientApi.insecureTls === true}
+                onChange={(e) => patch((a) => { a.insecureTls = e.target.checked; })}
+              />
+              <span>Skip TLS verify</span>
+            </label>
+            <p className="hint setting-hint">
+              {clientApi.insecureTls === true ? "TLS certificate verification is disabled" : "TLS certificate verification is enabled by default"}
+            </p>
+          </section>
+        </div>
+      )}
     </>
   );
 
@@ -700,9 +730,7 @@ export default function ClientApiEditor({
             onChange={(e) => patch((a) => { a.name = e.target.value; })}
           />
         </div>
-      </div>
-
-      <div className="env-toolbar">
+        <div className="env-toolbar">
         <div className="env-summary">
           <span>环境</span>
           <strong>{activeEnvName}</strong>
@@ -754,6 +782,7 @@ export default function ClientApiEditor({
             管理环境
           </button>
         </div>
+      </div>
       </div>
 
       <div className="url-bar">
@@ -824,32 +853,6 @@ export default function ClientApiEditor({
         </div>
       )}
 
-      <p className="resolved-url hint">
-        实际请求：<code>{resolvedUrl}</code>
-      </p>
-
-      <label className="inherit-switch client-proxy-switch" title="Uses HTTP_PROXY, HTTPS_PROXY and NO_PROXY from the server environment">
-        <input
-          type="checkbox"
-          checked={clientApi.proxy === true}
-          onChange={(e) => patch((a) => { a.proxy = e.target.checked; })}
-        />
-        <span>Proxy</span>
-      </label>
-      <p className="hint proxy-switch-hint">
-        {clientApi.proxy === true ? "Uses the server proxy environment" : "Direct connection; proxy disabled by default"}
-      </p>
-      <label className="inherit-switch client-tls-switch" title="Disables TLS certificate verification for this API">
-        <input
-          type="checkbox"
-          checked={clientApi.insecureTls === true}
-          onChange={(e) => patch((a) => { a.insecureTls = e.target.checked; })}
-        />
-        <span>Skip TLS verify</span>
-      </label>
-      <p className="hint tls-switch-hint">
-        {clientApi.insecureTls === true ? "TLS certificate verification is disabled" : "TLS certificate verification is enabled by default"}
-      </p>
       <SplitPane
         className="editor-split"
         rightHeader={rightHeader}
