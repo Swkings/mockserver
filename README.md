@@ -10,7 +10,7 @@ Mockserver 是一个带可视化管理界面的本地 Mock 服务工具，用于
 - HTTP Client 请求管理，支持环境、公共 Headers 和 Cookies
 - 实时请求记录，查看请求、响应、耗时和匹配结果
 - 使用目录组织 HTTP、gRPC Mock 和 Client 配置
-- 项目配置导入与导出
+- 项目配置导入与导出，支持从 OpenAPI / Swagger 文件或 cURL 命令导入 HTTP 接口
 - 深色与浅色主题
 
 ## 技术栈
@@ -61,7 +61,7 @@ npm start
 4. 启动对应的 Mock 服务。
 5. 在请求记录中查看实时调用信息和匹配结果。
 
-HTTP Mock、HTTP Client、gRPC Mock 和 gRPC Client 均可使用目录进行分类管理。项目配置可通过界面导入或导出，便于备份和迁移。
+HTTP Mock、HTTP Client、gRPC Mock 和 gRPC Client 均可使用目录进行分类管理。接口列表中的导入面板支持 OpenAPI 3、Swagger 2（YAML / JSON）和 cURL 文本；原有的单接口配置文件也可以继续导入。项目配置可通过界面导入或导出，便于备份和迁移。
 
 ## 可用命令
 

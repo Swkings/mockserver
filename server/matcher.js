@@ -4,6 +4,18 @@ function normalizePath(path) {
   return p.startsWith('/') ? p : `/${p}`;
 }
 
+function templatePathRegex(path) {
+  const parts = path.split(/(\{[a-zA-Z_][a-zA-Z0-9_]*\}|\/:[a-zA-Z_][a-zA-Z0-9_]*)/g);
+  const pattern = parts.map((part) => {
+    if (/^\{[a-zA-Z_][a-zA-Z0-9_]*\}$/.test(part)) {
+      return '[^/]+';
+    }
+    if (/^\/:([a-zA-Z_][a-zA-Z0-9_]*)$/.test(part)) return '/[^/]+';
+    return part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  }).join('');
+  return new RegExp(`^${pattern}$`);
+}
+
 function pathMatches(rule, requestPath) {
   const path = normalizePath(requestPath);
   const pattern = rule.path || rule.pathPattern;
@@ -17,6 +29,9 @@ function pathMatches(rule, requestPath) {
   }
 
   const normalized = normalizePath(pattern);
+  if (/\{[a-zA-Z_][a-zA-Z0-9_]*\}|\/:([a-zA-Z_][a-zA-Z0-9_]*)/.test(normalized)) {
+    return templatePathRegex(normalized).test(path);
+  }
   if (rule.pathPrefix) {
     return path.startsWith(normalized);
   }

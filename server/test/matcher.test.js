@@ -2,6 +2,24 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { matchRequest, sortApis } from '../matcher.js';
 
+test('matches OpenAPI-style and colon path parameters', () => {
+  assert.equal(matchRequest(
+    { match: { method: 'GET', path: '/users/{userId}/orders/:orderId' } },
+    { method: 'GET', path: '/users/u-1/orders/o-2', headers: {} },
+    ''
+  ), true);
+  assert.equal(matchRequest(
+    { match: { method: 'GET', path: '/users/{userId}/orders/:orderId' } },
+    { method: 'GET', path: '/users/u-1/orders', headers: {} },
+    ''
+  ), false);
+  assert.equal(matchRequest(
+    { match: { method: 'GET', path: '/references/urn:example' } },
+    { method: 'GET', path: '/references/urn:other', headers: {} },
+    ''
+  ), false);
+});
+
 test('matchRequest matches method and path', () => {
   const api = {
     match: { method: 'POST', path: '/scada/iot-collector/api/v1/task/feedback' },

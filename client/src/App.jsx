@@ -11,11 +11,13 @@ import Dropdown from './components/Dropdown.jsx';
 import ProjectSettings from './components/ProjectSettings.jsx';
 import ProtoManager from './components/ProtoManager.jsx';
 import MockServiceSwitch from './components/MockServiceSwitch.jsx';
+import ImportPanel from './components/ImportPanel.jsx';
 import { duplicateApi, duplicateClientApi, duplicateGrpcItem } from './utils/duplicate.js';
 import { useDragResize } from './components/SplitPane.jsx';
 import { defaultEnvironments, resolveClientApiUrl } from './utils/environment.js';
 import { findMatchingGrpcItem, sortGrpcMethods } from './utils/grpc.js';
 import { objToKv, kvToObj } from './utils/format.js';
+import { importCurlCommand, importOpenApiDocument, isOpenApiDocument } from './utils/apiImport.js';
 import {
   readProjectActivity,
   removeProjectActivity,
@@ -210,6 +212,7 @@ export default function App() {
   const [paused, setPaused] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [showProtoManager, setShowProtoManager] = useState(false);
+  const [importPanel, setImportPanel] = useState(null);
   const [mainView, setMainView] = useState('edit');
   const [navApiType, setNavApiType] = useState('api');
   const [sseConnected, setSseConnected] = useState(false);
@@ -1166,60 +1169,116 @@ export default function App() {
     notify('接口已导出');
   }
 
-  async function importItemFile(type, file, folderId) {
-    if (!file) return;
-    try {
-      const raw = await file.text();
-      const parsed = yaml.load(raw);
-      const item = parsed?.item || parsed;
-      if (!item || typeof item !== 'object') throw new Error('未找到接口配置');
-      if (parsed?.kind && parsed.kind !== itemExportKinds[type]) throw new Error('接口类型与当前分组不匹配');
-      if (type === 'api' && (!item.match || !item.response)) throw new Error('不是有效的 HTTP Mock 配置');
-      if (type === 'client-api' && !('url' in item)) throw new Error('不是有效的 HTTP Client 配置');
-      const imported = structuredClone(item);
-      imported.id = crypto.randomUUID();
-      imported.name = imported.name ? imported.name + ' Copy' : 'Imported API';
-      imported.folderId = folderId || undefined;
-      const cfg = folderConfig[type];
-      let protoToAdd = null;
+  function appendImportedItems(type, items, { host = '', environmentName = '' } = {}) {
+    if (!items.length) throw new Error('没有可导入的接口');
+    const cfg = folderConfig[type];
+    updateDraft((project) => {
+      const previousClientCount = (project.clientApis || []).length;
+      project[cfg.itemsKey] = project[cfg.itemsKey] || [];
+      project[cfg.itemsKey].push(...items);
 
-      if (type.startsWith('grpc-')) {
-        const bundledProto = parsed?.proto && typeof parsed.proto === 'object' ? parsed.proto : null;
-        const legacyContent = typeof imported.proto === 'string' ? imported.proto : '';
-        const protoContent = bundledProto?.content || legacyContent;
-        if (protoContent) {
-          const existing = (draft.protos || []).find((proto) => proto.content === protoContent);
-          if (existing) {
-            imported.protoId = existing.id;
-          } else {
-            protoToAdd = {
-              id: crypto.randomUUID(),
-              name: bundledProto?.name || (bundledProto?.filename || imported.protoFilename || 'Imported Proto').replace(/\.proto$/i, ''),
-              filename: bundledProto?.filename || imported.protoFilename || 'service.proto',
-              content: protoContent,
-            };
-            imported.protoId = protoToAdd.id;
-          }
-        } else if (imported.protoId && !(draft.protos || []).some((proto) => proto.id === imported.protoId)) {
-          throw new Error('gRPC 配置引用的 Proto 不存在');
-        } else {
-          imported.protoId = undefined;
+      if (type === 'client-api' && host) {
+        project.environments = project.environments?.length ? project.environments : defaultEnvironments();
+        let environment = project.environments.find((entry) => entry.host === host);
+        const replaceDefault = !environment
+          && previousClientCount === 0
+          && project.environments.length === 1
+          && project.environments[0].host === 'http://localhost:8080';
+        if (replaceDefault) {
+          environment = project.environments[0];
+          environment.host = host;
+          if (environmentName) environment.name = environmentName;
+        } else if (!environment) {
+          const hostname = (() => { try { return new URL(host).hostname; } catch { return host; } })();
+          environment = {
+            id: crypto.randomUUID(),
+            name: environmentName || hostname || 'Imported',
+            host,
+          };
+          project.environments.push(environment);
         }
-        delete imported.proto;
-        delete imported.protoFilename;
+        project.activeEnvironmentId = environment.id;
       }
+      return project;
+    });
+    selectItem(type, items[0].id);
+    notify(items.length === 1 ? '接口已导入' : `已导入 ${items.length} 个接口`);
+  }
 
-      updateDraft((d) => {
-        d[cfg.itemsKey] = d[cfg.itemsKey] || [];
-        if (protoToAdd) d.protos = [...(d.protos || []), protoToAdd];
-        d[cfg.itemsKey].push(imported);
-        return d;
-      });
-      selectItem(type, imported.id);
-      notify('接口已导入');
-    } catch (err) {
-      notify(err.message || '导入失败', 'error');
+  function importExportedItem(type, parsed, folderId) {
+    const item = parsed?.item || parsed;
+    if (!item || typeof item !== 'object' || Array.isArray(item)) throw new Error('未找到接口配置');
+    if (parsed?.kind && parsed.kind !== itemExportKinds[type]) throw new Error('接口类型与当前分组不匹配');
+    if (type === 'api' && (!item.match || !item.response)) throw new Error('不是有效的 HTTP Mock 配置');
+    if (type === 'client-api' && !('url' in item)) throw new Error('不是有效的 HTTP Client 配置');
+    const imported = structuredClone(item);
+    imported.id = crypto.randomUUID();
+    imported.name = imported.name ? imported.name + ' Copy' : 'Imported API';
+    imported.folderId = folderId || undefined;
+    let protoToAdd = null;
+
+    if (type.startsWith('grpc-')) {
+      const bundledProto = parsed?.proto && typeof parsed.proto === 'object' ? parsed.proto : null;
+      const legacyContent = typeof imported.proto === 'string' ? imported.proto : '';
+      const protoContent = bundledProto?.content || legacyContent;
+      if (protoContent) {
+        const existing = (draftRef.current?.protos || []).find((proto) => proto.content === protoContent);
+        if (existing) {
+          imported.protoId = existing.id;
+        } else {
+          protoToAdd = {
+            id: crypto.randomUUID(),
+            name: bundledProto?.name || (bundledProto?.filename || imported.protoFilename || 'Imported Proto').replace(/\.proto$/i, ''),
+            filename: bundledProto?.filename || imported.protoFilename || 'service.proto',
+            content: protoContent,
+          };
+          imported.protoId = protoToAdd.id;
+        }
+      } else if (imported.protoId && !(draftRef.current?.protos || []).some((proto) => proto.id === imported.protoId)) {
+        throw new Error('gRPC 配置引用的 Proto 不存在');
+      } else {
+        imported.protoId = undefined;
+      }
+      delete imported.proto;
+      delete imported.protoFilename;
     }
+
+    const cfg = folderConfig[type];
+    updateDraft((project) => {
+      project[cfg.itemsKey] = project[cfg.itemsKey] || [];
+      if (protoToAdd) project.protos = [...(project.protos || []), protoToAdd];
+      project[cfg.itemsKey].push(imported);
+      return project;
+    });
+    selectItem(type, imported.id);
+    notify('接口已导入');
+  }
+
+  async function importItemFile(type, file, folderId) {
+    if (!file) throw new Error('请先选择要导入的文件');
+    const raw = await file.text();
+    let parsed;
+    try {
+      parsed = yaml.load(raw);
+    } catch (error) {
+      throw new Error(`文件解析失败：${error.message}`);
+    }
+    if ((type === 'api' || type === 'client-api') && isOpenApiDocument(parsed)) {
+      const result = importOpenApiDocument(parsed, { type, folderId });
+      appendImportedItems(type, result.items, { host: result.host, environmentName: result.title });
+      return;
+    }
+    importExportedItem(type, parsed, folderId);
+  }
+
+  async function importItemCurl(type, command, folderId) {
+    const result = importCurlCommand(command, { type, folderId });
+    appendImportedItems(type, result.items, { host: result.host });
+  }
+
+  function openImportPanel(type, folderId = null) {
+    const folder = getFolders(type).find((entry) => entry.id === folderId);
+    setImportPanel({ type, folderId, folderName: folder?.name || '' });
   }
 
   function renderNavItem(type, item, depth = 0) {
@@ -1284,7 +1343,7 @@ export default function App() {
           onDrop={(e) => handleItemDrop(e, type, folder.id)}
           onContextMenu={(e) => openContextMenu(e, [
             { label: `新建${cfg.itemLabel}`, onClick: () => addItem(type, folder.id) },
-            { label: '导入接口', fileInput: true, accept: '.yaml,.yml,.json', onFile: (file) => importItemFile(type, file, folder.id) },
+            { label: '导入接口', onClick: () => openImportPanel(type, folder.id) },
             { label: '新建子文件夹', onClick: () => addFolder(type, folder.id) },
             { label: '重命名', onClick: () => renameFolder(type, folder.id) },
             { label: '复制', onClick: () => copyFolder(type, folder.id) },
@@ -1380,10 +1439,9 @@ export default function App() {
             <button type="button" className={direction === 'client' ? 'active' : ''} onClick={() => switchType(isGrpc ? 'grpc-client' : 'client-api')}>Client</button>
           </div>
           <div className="nav-api-actions">
-            <label className="icon-btn sm nav-import-btn" title="导入接口" aria-label="导入接口">
+            <button type="button" className="icon-btn sm nav-import-btn" title="导入接口" aria-label="导入接口" onClick={() => openImportPanel(type)}>
               <ImportIcon />
-              <input type="file" accept=".yaml,.yml,.json" hidden onChange={(e) => { importItemFile(type, e.target.files?.[0], null); e.target.value = ''; }} />
-            </label>
+            </button>
             <button type="button" className="icon-btn sm" title="新建文件夹" aria-label="新建文件夹" onClick={() => addFolder(type)}><FolderPlusIcon /></button>
             <button type="button" className="icon-btn sm" title={'新建 ' + cfg.itemLabel} aria-label={'新建 ' + cfg.itemLabel} onClick={() => addItem(type)}>+</button>
             {isGrpc && <button type="button" className="nav-proto-import" title="管理项目 Proto" onClick={openProtoManager}>Proto</button>}
@@ -1700,6 +1758,16 @@ export default function App() {
           </div>
         </div>
       </div>
+
+      {importPanel && (
+        <ImportPanel
+          type={importPanel.type}
+          folderName={importPanel.folderName}
+          onImportFile={(file) => importItemFile(importPanel.type, file, importPanel.folderId)}
+          onImportCurl={(command) => importItemCurl(importPanel.type, command, importPanel.folderId)}
+          onClose={() => setImportPanel(null)}
+        />
+      )}
 
       {dialog && (
         <div className="modal-backdrop" role="presentation" onMouseDown={() => resolveDialog(null)}>
