@@ -16,7 +16,10 @@ export function applyPathParams(path, params = {}) {
   if (!path) return '/';
   let result = path;
   for (const [key, value] of Object.entries(params)) {
-    const encoded = encodeURIComponent(String(value ?? ''));
+    const raw = String(value ?? '');
+    const encoded = raw === '' || raw === `:${key}`
+      ? `:${key}`
+      : encodeURIComponent(raw);
     result = result.replaceAll(`:${key}`, encoded).replaceAll(`{${key}}`, encoded);
   }
   return result;
