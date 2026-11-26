@@ -3,5 +3,8 @@ dist/
 data/
 configs/
 .vscode/
-.cursor/
+.cursor/*
+!.cursor/skills/
+.cursor/skills/*
+!.cursor/skills/generate-mockserver-config/
 .DS_Store
