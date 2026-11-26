@@ -1,5 +1,6 @@
 import { GrpcEngine } from './grpcEngine.js';
 import { inspectGrpcProto, invokeGrpc } from './grpcRuntime.js';
+import { getActiveEnvironment, resolveGrpcTarget } from '../shared/environment.js';
 import { MockEngine } from './mockEngine.js';
 import { resolveProjectGrpcConfig } from './utils/grpcProtos.js';
 
@@ -40,15 +41,28 @@ export class RuntimeEngine {
     const client = (project.grpcClients || []).find((item) => item.id === clientId);
     if (!client) throw new Error('gRPC Client not found');
 
+    const environmentId = overrides.activeEnvironmentId ?? project.activeEnvironmentId;
+    const environment = environmentId ? getActiveEnvironment(this.store.environments, environmentId) : null;
+    if (environmentId && !environment) throw new Error('所选环境不存在');
+    const nodePortEnabled = overrides.nodePortEnabled ?? project.nodePortEnabled;
+    const target = resolveGrpcTarget({
+      environment,
+      serviceKey: project.serviceKey,
+      nodePortEnabled,
+      item: { ...client, ...overrides },
+    });
+    if (!target) throw new Error('请为该服务配置 NodePort 地址');
+    const options = { ...overrides, target, useTls: nodePortEnabled ? target.startsWith('https:') : overrides.useTls };
+
     const started = Date.now();
     try {
       const effectiveClient = resolveProjectGrpcConfig(project, {
         ...client,
-        ...overrides,
+        ...options,
         id: client.id,
         name: client.name,
       });
-      const result = await invokeGrpc(effectiveClient, overrides);
+      const result = await invokeGrpc(effectiveClient, options);
       const record = {
         id: `${Date.now()}-grpc-client-${Math.random().toString(36).slice(2, 8)}`,
         projectId: project.id,
@@ -59,7 +73,7 @@ export class RuntimeEngine {
         method: result.methodName,
         methodType: result.methodType,
         path: result.path,
-        url: `${overrides.target || client.target}${result.path}`,
+        url: `${target}${result.path}`,
         headers: overrides.metadata || client.metadata || {},
         body: typeof (overrides.request ?? client.request) === 'string'
           ? (overrides.request ?? client.request)
@@ -84,7 +98,7 @@ export class RuntimeEngine {
         protocol: 'grpc',
         method: client.methodName || 'gRPC',
         path: [client.packageName, client.serviceName, client.methodName].filter(Boolean).join('/'),
-        url: overrides.target || client.target,
+        url: target,
         headers: overrides.metadata || client.metadata || {},
         body: typeof (overrides.request ?? client.request) === 'string'
           ? (overrides.request ?? client.request)

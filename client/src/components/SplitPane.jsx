@@ -6,11 +6,11 @@ function useDragResize({ initialSize, minSize, maxSize, invert = false } = {}) {
   const startPos = useRef(0);
   const startSize = useRef(initialSize);
 
-  const onMouseDown = useCallback((e) => {
+  const onMouseDown = useCallback((e, actualSize = size) => {
     e.preventDefault();
     dragging.current = true;
     startPos.current = e.clientX;
-    startSize.current = size;
+    startSize.current = actualSize;
     document.body.style.cursor = 'col-resize';
     document.body.style.userSelect = 'none';
   }, [size]);
@@ -51,12 +51,15 @@ export default function SplitPane({
   rightHeader,
   resizeSide = 'right',
   initialRightWidth = 420,
+  rightFraction,
   initialLeftWidth = 240,
   minLeft = 280,
   minRight = 300,
   className = '',
 }) {
-  const containerRef = useRef(null);
+  const leftRef = useRef(null);
+  const rightRef = useRef(null);
+  const [resized, setResized] = useState(false);
 
   const rightResize = useDragResize({
     initialSize: initialRightWidth,
@@ -70,34 +73,41 @@ export default function SplitPane({
     invert: false,
   });
 
-  const onMouseDown = resizeSide === 'left' ? leftResize.onMouseDown : rightResize.onMouseDown;
-
-  const containerWidth = containerRef.current?.offsetWidth || 1200;
-  const handleWidth = 6;
-
-  let leftStyle;
-  let rightStyle;
-
-  if (resizeSide === 'left') {
-    const leftW = Math.min(leftResize.size, containerWidth - minRight - handleWidth);
-    leftStyle = { width: leftW, flexShrink: 0 };
-    rightStyle = { flex: 1, minWidth: minRight };
-  } else {
-    const rightW = Math.min(rightResize.size, containerWidth - minLeft - handleWidth);
-    leftStyle = { flex: 1, minWidth: minLeft };
-    rightStyle = { width: rightW, flexShrink: 0 };
+  function onMouseDown(event) {
+    if (resizeSide === 'left') {
+      const actualWidth = leftRef.current?.offsetWidth || initialLeftWidth;
+      leftResize.setSize(actualWidth);
+      leftResize.onMouseDown(event, actualWidth);
+    } else {
+      const actualWidth = rightRef.current?.offsetWidth || initialRightWidth;
+      rightResize.setSize(actualWidth);
+      rightResize.onMouseDown(event, actualWidth);
+      setResized(true);
+    }
   }
 
+  const leftStyle = resizeSide === 'left'
+    ? { width: leftResize.size, maxWidth: `calc(100% - ${minRight + 6}px)`, flexShrink: 0 }
+    : { flex: 1, minWidth: minLeft };
+  const rightStyle = resizeSide === 'left'
+    ? { flex: 1, minWidth: minRight }
+    : {
+      width: rightFraction && !resized ? `${rightFraction * 100}%` : rightResize.size,
+      minWidth: minRight,
+      maxWidth: `calc(100% - ${minLeft + 6}px)`,
+      flexShrink: 0,
+    };
+
   return (
-    <div className={`split-pane ${className}`} ref={containerRef}>
-      <div className="split-left scroll-y" style={leftStyle}>{left}</div>
+    <div className={`split-pane ${className}`}>
+      <div className="split-left scroll-y" style={leftStyle} ref={leftRef}>{left}</div>
       <div
         className="split-handle"
         onMouseDown={onMouseDown}
         role="separator"
         aria-orientation="vertical"
       />
-      <div className="split-right" style={rightStyle}>
+      <div className="split-right" style={rightStyle} ref={rightRef}>
         {(rightHeader || rightTitle) && (
           <div className="split-right-head">{rightHeader || rightTitle}</div>
         )}

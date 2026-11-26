@@ -1,10 +1,13 @@
+import Icon from './Icon.jsx';
+import Dropdown from './Dropdown.jsx';
 import { useEffect, useMemo, useState } from 'react';
 import { api } from '../api.js';
 import { kvToObj, objToKv, prettyJson } from '../utils/format.js';
 import KVEditor from './KVEditor.jsx';
 import SplitPane from './SplitPane.jsx';
-import EnvironmentManager from './EnvironmentManager.jsx';
-import { getActiveEnvironment } from '../utils/environment.js';
+import RequestAddress from './RequestAddress.jsx';
+import ServiceConnection from './ServiceConnection.jsx';
+import { getActiveEnvironment, grpcTargetAuthority, resolveGrpcTarget } from '../utils/environment.js';
 import { sortGrpcMethods } from '../utils/grpc.js';
 import GrpcMethodPicker from './GrpcMethodPicker.jsx';
 import BodyPresetToolbar from './BodyPresetToolbar.jsx';
@@ -17,20 +20,6 @@ const GRPC_CODES = [
   [10, 'ABORTED'], [11, 'OUT_OF_RANGE'], [12, 'UNIMPLEMENTED'], [13, 'INTERNAL'],
   [14, 'UNAVAILABLE'], [15, 'DATA_LOSS'], [16, 'UNAUTHENTICATED'],
 ];
-
-function normalizeGrpcTarget(value) {
-  const raw = String(value || '').trim();
-  if (!raw) return 'http://127.0.0.1:50051';
-  if (raw.includes('://')) {
-    try {
-      return new URL(raw).host;
-    } catch {
-      const schemeIndex = raw.indexOf('://');
-      return raw.slice(schemeIndex + 3).split('/')[0];
-    }
-  }
-  return raw.split('/')[0];
-}
 
 function methodType(method) {
   if (!method) return '手动方法 / 未匹配 Proto';
@@ -94,14 +83,13 @@ export default function GrpcEditor({
   item,
   itemIndex,
   environments,
-  activeEnvironmentId,
+  project,
   onProjectPatch,
   onChange,
-  onRemove,
+  actions,
   onSave,
   onSent,
   busy,
-  onManageProtos,
 }) {
   const isMock = mode === 'mock';
   const collectionKey = isMock ? 'grpcMocks' : 'grpcClients';
@@ -112,7 +100,6 @@ export default function GrpcEditor({
   const [error, setError] = useState('');
   const [result, setResult] = useState(null);
   const [rightTab, setRightTab] = useState('response');
-  const [showEnvEditor, setShowEnvEditor] = useState(false);
 
   useEffect(() => {
     setTab(isMock ? 'mock' : 'body');
@@ -134,23 +121,25 @@ export default function GrpcEditor({
     [selectedService]
   );
   const metadataRows = useMemo(() => objToKv(item.metadata), [item.metadata]);
-  const activeEnvironment = useMemo(
-    () => getActiveEnvironment(environments, activeEnvironmentId),
-    [environments, activeEnvironmentId]
-  );
+  const { activeEnvironmentId, nodePortEnabled, serviceKey } = project || {};
+  const environment = activeEnvironmentId ? getActiveEnvironment(environments, activeEnvironmentId) : null;
   const useEnvironment = item.useEnvironment !== false;
-  const resolvedTarget = normalizeGrpcTarget(useEnvironment
-    ? (activeEnvironment?.grpcTarget || item.target || 'http://127.0.0.1:50051')
-    : (item.target || 'http://127.0.0.1:50051'));
-
+  const target = activeEnvironmentId && !environment
+    ? ''
+    : resolveGrpcTarget({ environment, serviceKey, nodePortEnabled, item });
+  const resolvedTarget = grpcTargetAuthority(target);
+  const useTls = nodePortEnabled ? target.startsWith('https:') : item.useTls === true;
 
   const actualRequestPath = `${[item.packageName, item.serviceName].filter(Boolean).join(".")}/${item.methodName || "Method"}`;
+  const requestAddress = /^(?:\[[^\]]+\]|[^:]+)$/.test(resolvedTarget)
+    ? `${resolvedTarget}:443`
+    : resolvedTarget;
   const actualRequestBody = typeof item.request === "string"
     ? (item.request || "{}")
     : JSON.stringify(item.request || {});
   const grpcurlCommand = [
     "grpcurl",
-    item.useTls === true ? null : "-plaintext",
+    useTls ? null : "-plaintext",
     `-max-time ${Math.max(1, Number(item.timeoutMs) || 10000) / 1000}`,
     ...Object.entries(item.metadata || {}).map(([key, value]) => `-H ${JSON.stringify(`${key}: ${value}`)}`),
     `-d ${JSON.stringify(actualRequestBody)}`,
@@ -251,7 +240,7 @@ export default function GrpcEditor({
     setError('');
     setResult(null);
     try {
-      const response = await api.sendGrpcClient(projectId, item.id, { ...item, target: resolvedTarget });
+      const response = await api.sendGrpcClient(projectId, item.id, { ...item, activeEnvironmentId: activeEnvironmentId || "", nodePortEnabled });
       setResult(response);
       setRightTab('response');
       onSent?.(response);
@@ -268,23 +257,22 @@ export default function GrpcEditor({
         <button type="button" className={`tab ${tab === 'definition' ? 'active' : ''}`} onClick={() => setTab('definition')}>服务定义</button>
         <button type="button" className={`tab ${tab === 'options' ? 'active' : ''}`} onClick={() => setTab('options')}>高级</button>
         {isMock && <button type="button" className={`tab ${tab === 'mock' ? 'active' : ''}`} onClick={() => setTab('mock')}>Mock</button>}
-        {!isMock && <button type="button" className={`tab ${tab === 'body' ? 'active' : ''}`} onClick={() => setTab('body')}>Body</button>}
+        {!isMock && <>
+          <button type="button" className={`tab ${tab === 'body' ? 'active' : ''}`} onClick={() => setTab('body')}>Body</button>
+          <button type="button" className={`tab ${tab === 'schema' ? 'active' : ''}`} onClick={() => setTab('schema')}>结构</button>
+        </>}
       </div>
 
       {tab === 'definition' && (
         <div className="panel grpc-definition-panel">
           <section>
-            <div className="grpc-section-head">
-              <h4>Proto</h4>
-              <button type="button" className="ghost sm" onClick={onManageProtos}>管理 Proto</button>
-            </div>
-            <select className="field mono-field" value={item.protoId || ''} onChange={(event) => changeProto(event.target.value)}>
+            <h4>Proto</h4>
+            <select className="field mono-field" aria-label="Proto" value={item.protoId || ''} onChange={(event) => changeProto(event.target.value)}>
               <option value="">未关联 Proto</option>
               {(protos || []).map((proto) => (
                 <option value={proto.id} key={proto.id}>{proto.name || proto.filename} · {proto.filename}</option>
               ))}
             </select>
-            {selectedProto && <p className="hint section-hint">共享自项目 Proto 管理；修改后所有关联方法同步生效。</p>}
           </section>
           <section>
             <div className="grpc-section-head">
@@ -315,7 +303,7 @@ export default function GrpcEditor({
                 <label><span>Service</span><input value={item.serviceName || ''} onChange={(e) => patch((target) => { target.serviceName = e.target.value; })} /></label>
               </div>
             )}
-            <p className="hint">当前方法类型：<strong>{methodType(selectedMethod)}</strong>。方法在上方 RPC 路径栏选择。</p>
+            {selectedMethod && <p className="hint">{methodType(selectedMethod)}</p>}
           </section>
           <section>
             <h4>说明</h4>
@@ -324,47 +312,49 @@ export default function GrpcEditor({
         </div>
       )}
 
-      {!isMock && tab === "body" && (
+      {!isMock && tab === 'schema' && (
+        <div className="panel fill-panel editor-schema-panel">
+          <section className="grpc-schema-panel">
+            <div className="grpc-body-pane-head">
+              <strong>请求参数结构</strong>
+              {selectedMethod?.requestSchema && <code>{selectedMethod.requestSchema.typeName}{selectedMethod.requestStream ? "[]" : ""}</code>}
+            </div>
+            {selectedMethod?.requestSchema ? (
+              <div className="grpc-schema-tree">
+                {selectedMethod.requestSchema.fields?.length > 0
+                  ? <SchemaFieldRows fields={selectedMethod.requestSchema.fields} />
+                  : <div className="record-empty grpc-schema-empty">该请求消息没有参数</div>}
+              </div>
+            ) : (
+              <div className="record-empty grpc-schema-empty">请先关联项目 Proto 并选择其中的方法</div>
+            )}
+          </section>
+        </div>
+      )}
+
+      {!isMock && tab === 'body' && (
         <div className="panel fill-panel grpc-request-body">
-          <div className="grpc-body-grid">
-            <section className="grpc-schema-panel">
-              <div className="grpc-body-pane-head">
-                <strong>请求参数结构</strong>
-                {selectedMethod?.requestSchema && <code>{selectedMethod.requestSchema.typeName}{selectedMethod.requestStream ? "[]" : ""}</code>}
+          <section className="grpc-request-json-panel editor-body-panel">
+            <div className="body-toolbar grpc-body-json-toolbar">
+              <BodyPresetToolbar
+                presets={item.bodyPresets}
+                body={item.request}
+                onBodyChange={(body) => patch((target) => { target.request = body; })}
+                onPresetsChange={(bodyPresets) => patch((target) => { target.bodyPresets = bodyPresets; })}
+                onSave={onSave}
+              />
+              <div className="grpc-body-actions">
+                <button
+                  type="button"
+                  className="ghost sm"
+                  disabled={!selectedMethod?.requestSchema}
+                  onClick={() => patch((target) => { target.request = JSON.stringify(randomRequest(selectedMethod), null, 2); })}
+                >随机生成</button>
+                <button type="button" className="link" onClick={() => patch((target) => { target.request = prettyJson(target.request); })}>格式化</button>
               </div>
-              {selectedMethod?.requestSchema ? (
-                <div className="grpc-schema-tree">
-                  {selectedMethod.requestSchema.fields?.length > 0
-                    ? <SchemaFieldRows fields={selectedMethod.requestSchema.fields} />
-                    : <div className="record-empty grpc-schema-empty">该请求消息没有参数</div>}
-                </div>
-              ) : (
-                <div className="record-empty grpc-schema-empty">请先关联项目 Proto 并选择其中的方法</div>
-              )}
-            </section>
-            <section className="grpc-request-json-panel">
-              <div className="body-toolbar grpc-body-json-toolbar">
-                <strong>请求 JSON</strong>
-                <BodyPresetToolbar
-                  presets={item.bodyPresets}
-                  body={item.request}
-                  onBodyChange={(body) => patch((target) => { target.request = body; })}
-                  onPresetsChange={(bodyPresets) => patch((target) => { target.bodyPresets = bodyPresets; })}
-                  onSave={onSave}
-                />
-                <div className="grpc-body-actions">
-                  <button
-                    type="button"
-                    className="ghost sm"
-                    disabled={!selectedMethod?.requestSchema}
-                    onClick={() => patch((target) => { target.request = JSON.stringify(randomRequest(selectedMethod), null, 2); })}
-                  >随机生成</button>
-                  <button type="button" className="link" onClick={() => patch((target) => { target.request = prettyJson(target.request); })}>格式化</button>
-                </div>
-              </div>
-              <textarea className="code-input fill" value={item.request ?? ""} spellCheck={false} onChange={(e) => patch((target) => { target.request = e.target.value; })} />
-            </section>
-          </div>
+            </div>
+            <textarea className="code-input fill" aria-label="请求 JSON" value={item.request ?? ""} spellCheck={false} onChange={(e) => patch((target) => { target.request = e.target.value; })} />
+          </section>
         </div>
       )}
 
@@ -427,12 +417,14 @@ export default function GrpcEditor({
             <>
               <div className="inline-row">
                 <label>Timeout (ms)<input type="number" min={1} value={item.timeoutMs ?? 10000} onChange={(e) => patch((target) => { target.timeoutMs = Number(e.target.value); })} /></label>
-                <label className="check"><input type="checkbox" checked={item.useTls === true} onChange={(e) => patch((target) => { target.useTls = e.target.checked; })} />TLS</label>
+                <label className="check"><input type="checkbox" checked={useTls} disabled={nodePortEnabled} onChange={(e) => patch((target) => { target.useTls = e.target.checked; })} />TLS</label>
               </div>
               <section>
-                <h4>Target</h4>
-                <input className="field mono-field" value={item.target || ''} disabled={useEnvironment} placeholder="http://127.0.0.1:50051" onChange={(e) => patch((target) => { target.target = e.target.value; })} />
-                <p className="hint">启用环境时使用当前环境的 gRPC Target；关闭后使用这里的地址。</p>
+                <label className="inherit-switch">
+                  <input type="checkbox" checked={useEnvironment} disabled={nodePortEnabled} onChange={(e) => patch((target) => { target.useEnvironment = e.target.checked; })} />
+                  <span>使用环境的 gRPC 地址</span>
+                </label>
+                <input className="field mono-field" aria-label="自定义 gRPC 地址" value={item.target || ''} disabled={useEnvironment || nodePortEnabled} placeholder="http://127.0.0.1:50051" onChange={(e) => patch((target) => { target.target = e.target.value; })} />
               </section>
               <section><h4>Metadata</h4><KVEditor resetKey={`${item.id}-metadata`} rows={metadataRows} bulkEdit onChange={(rows) => patch((target) => { const values = kvToObj(rows); target.metadata = Object.keys(values).length ? values : undefined; })} /></section>
             </>
@@ -444,39 +436,16 @@ export default function GrpcEditor({
 
   const right = rightTab === "request" ? (
     <div className="side-panel grpc-actual-request">
-      <div className="request-meta">
-        <span className="hint">环境：{useEnvironment ? (activeEnvironment?.name || "默认") : "接口配置"}</span>
-        <span className="hint">{methodType(selectedMethod)}</span>
-      </div>
-      <div className="request-params">
-        <span className="hint">Target</span>
-        <span className="param-chip">{resolvedTarget}</span>
-        <span className="param-chip">{item.useTls === true ? "TLS" : "Plaintext"}</span>
-      </div>
-      <div className="request-params">
-        <span className="hint">RPC</span>
-        <span className="param-chip">/{actualRequestPath}</span>
-      </div>
-      {Object.keys(item.metadata || {}).length > 0 && (
-        <div className="request-params">
-          <span className="hint">Metadata</span>
-          {Object.entries(item.metadata).map(([key, value]) => (
-            <span key={key} className="param-chip">{key}={String(value)}</span>
-          ))}
-        </div>
-      )}
       <div className="request-format-toolbar">
-        <div className="request-format-tabs">
-          <button type="button" className="active">grpcurl</button>
-        </div>
-        <button type="button" className="ghost copy-curl-btn" onClick={() => navigator.clipboard.writeText(grpcurlCommand)}>复制 grpcurl</button>
+        <code>grpcurl</code>
+        <button type="button" className="ghost copy-curl-btn" disabled={!resolvedTarget} onClick={() => navigator.clipboard.writeText(grpcurlCommand)}>复制</button>
       </div>
-      <pre className="code-block fill">{grpcurlCommand}</pre>
+      <pre className="code-block fill">{resolvedTarget ? grpcurlCommand : '请配置连接地址'}</pre>
     </div>
   ) : (
     <div className="side-panel grpc-response-panel">
       {error && <div className="grpc-error">{error}</div>}
-      {!result && !error && <div className="record-empty side-empty">点击「调用」执行请求，响应将显示在这里</div>}
+      {!result && !error && <div className="record-empty side-empty">暂无响应</div>}
       {result && (
         <>
           <div className="response-meta">
@@ -499,68 +468,35 @@ export default function GrpcEditor({
 
   return (
     <div className="editor-page grpc-editor">
-      <div className="editor-head">
-        <div className="editor-title">
-          {isMock && <label className="toggle-switch" title="启用"><input type="checkbox" checked={item.enabled !== false} onChange={(e) => patch((target) => { target.enabled = e.target.checked; })} /><span className="toggle-track" /></label>}
-          <span className="protocol-badge grpc">gRPC</span>
-          <input className="title-input" value={item.name} onChange={(e) => patch((target) => { target.name = e.target.value; })} />
-        </div>
-      </div>
-      {!isMock && (<>
-        <div className="env-toolbar grpc-env-toolbar">
-          <div className="env-summary">
-            <span>环境</span>
-            <strong>{activeEnvironment?.name || '默认'}</strong>
-            <code>{resolvedTarget}</code>
-          </div>
-          <div className="env-controls">
-            <select className="env-inline-select" value={activeEnvironmentId || environments?.[0]?.id || ''} disabled={!useEnvironment} onChange={(e) => onProjectPatch?.((draft) => { draft.activeEnvironmentId = e.target.value; })}>
-              {(environments || []).map((env) => <option key={env.id} value={env.id}>{env.name || '未命名'}</option>)}
-            </select>
-            <label className="inherit-switch grpc-env-switch">
-              <input type="checkbox" checked={useEnvironment} onChange={(e) => patch((target) => { target.useEnvironment = e.target.checked; })} />
-              <span>使用环境</span>
-            </label>
-            <button type="button" className="ghost" onClick={() => setShowEnvEditor((value) => !value)}>{showEnvEditor ? '收起' : '管理环境'}</button>
-          </div>
-        </div>
-        {showEnvEditor && (
-          <EnvironmentManager
-            compact
-            resetKey={projectId}
-            environments={environments}
-            activeEnvironmentId={activeEnvironmentId}
-            onEnvironmentsChange={(next) => onProjectPatch?.((draft) => {
-              draft.environments = next;
-              if (!next.some((env) => env.id === draft.activeEnvironmentId)) draft.activeEnvironmentId = next[0]?.id;
-            })}
-            onActiveEnvironmentChange={(id) => onProjectPatch?.((draft) => { draft.activeEnvironmentId = id; })}
-          />
-        )}
-      </>)}
       <div className="url-bar grpc-rpc-bar">
-        <span className="method-select grpc-method-select">RPC</span>
-        <div className="grpc-rpc-path-editor">
-          <code>/{[item.packageName, item.serviceName].filter(Boolean).join(".")}/</code>
-          <GrpcMethodPicker
-            methods={sortedMethods}
-            selectedMethod={selectedMethod}
-            currentMethodName={item.methodName}
-            onSelect={(method) => {
-              patch((target) => { target.methodName = method.name; });
-              setTab(isMock ? 'mock' : 'body');
-            }}
-          />
+        <div className="request-line">
+          <span className="method-select grpc-method-select">RPC</span>
+          {!isMock && <RequestAddress address={requestAddress} />}
+          <div className="grpc-rpc-path-editor">
+            <code>/{[item.packageName, item.serviceName].filter(Boolean).join(".")}/</code>
+            <GrpcMethodPicker
+              methods={sortedMethods}
+              selectedMethod={selectedMethod}
+              currentMethodName={item.methodName}
+              onSelect={(method) => {
+                patch((target) => { target.methodName = method.name; });
+                setTab(isMock ? 'mock' : 'body');
+              }}
+            />
+          </div>
         </div>
+        {!isMock && (
+          <ServiceConnection compact grpcTarget={resolvedTarget} project={project} environments={environments} onChange={onProjectPatch} />
+        )}
         <div className="url-actions">
-          {!isMock && <button type="button" className="primary" disabled={sending || busy || !selectedMethod} onClick={sendRequest}>{sending ? '调用中…' : '调用'}</button>}
+          {!isMock && <button type="button" className="primary" disabled={sending || busy || !selectedMethod || !resolvedTarget} onClick={sendRequest}>{sending ? '调用中…' : '调用'}</button>}
           <button type="button" className={isMock ? 'primary' : 'ghost'} onClick={onSave} disabled={busy}>保存</button>
-          <button type="button" className="ghost danger" onClick={onRemove}>删除</button>
+          <Dropdown trigger={<Icon name="more" />} label="接口操作" items={actions} disabled={busy} />
         </div>
       </div>
       {isMock
         ? <div className="grpc-editor-single">{left}</div>
-        : <SplitPane className="editor-split" rightHeader={rightHeader} initialRightWidth={460} minLeft={380} minRight={340} left={left} right={right} />}
+        : <SplitPane className="editor-split" rightHeader={rightHeader} rightFraction={0.43} minLeft={380} minRight={340} left={left} right={right} />}
     </div>
   );
 }

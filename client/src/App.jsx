@@ -1,22 +1,23 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import yaml from 'js-yaml';
 import { api, subscribeEvents } from './api.js';
 import ApiEditor from './components/ApiEditor.jsx';
 import ClientApiEditor from './components/ClientApiEditor.jsx';
+import GrpcMethodPicker from './components/GrpcMethodPicker.jsx';
 import GrpcEditor from './components/GrpcEditor.jsx';
 import RequestLogPanel from './components/RequestLogPanel.jsx';
 import MethodBadge from './components/MethodBadge.jsx';
 import ContextMenu from './components/ContextMenu.jsx';
+import Icon from './components/Icon.jsx';
 import Dropdown from './components/Dropdown.jsx';
 import ProjectSettings from './components/ProjectSettings.jsx';
 import ProtoManager from './components/ProtoManager.jsx';
-import MockServiceSwitch from './components/MockServiceSwitch.jsx';
+import EnvironmentManager from './components/EnvironmentManager.jsx';
 import ImportPanel from './components/ImportPanel.jsx';
+import InterfaceDrawer from './components/InterfaceDrawer.jsx';
+import PanelDivider, { clampPanelWidth, useContainerWidth } from './components/PanelDivider.jsx';
 import { duplicateApi, duplicateClientApi, duplicateGrpcItem } from './utils/duplicate.js';
-import { useDragResize } from './components/SplitPane.jsx';
-import { defaultEnvironments, resolveClientApiUrl } from './utils/environment.js';
 import { findMatchingGrpcItem, sortGrpcMethods } from './utils/grpc.js';
-import { objToKv, kvToObj } from './utils/format.js';
 import { importCurlCommand, importOpenApiDocument, isOpenApiDocument } from './utils/apiImport.js';
 import {
   readProjectActivity,
@@ -32,6 +33,11 @@ import {
   writeProjectRequestRecords,
 } from './utils/requestRecords.js';
 
+const emptyGrpcMethodOption = { key: 'manual', name: '空白方法', detail: '稍后关联 Proto' };
+const minProjectSidebarWidth = 220;
+const minProjectRailWidth = 104;
+const minInterfaceSidebarWidth = 190;
+
 const emptyProject = () => ({
   name: 'New Project',
   host: '0.0.0.0',
@@ -41,8 +47,6 @@ const emptyProject = () => ({
   grpcPort: 50051,
   grpcEnabled: false,
   description: '',
-  environments: defaultEnvironments(),
-  activeEnvironmentId: 'local',
   clientCookies: {},
   apiFolders: [],
   clientApiFolders: [],
@@ -168,28 +172,12 @@ function getAncestorFolderIds(folders, folderId) {
 }
 
 
-function ImportIcon() {
-  return (
-    <svg viewBox="0 0 24 24" aria-hidden="true" className="nav-action-icon">
-      <path d="M12 3v11" />
-      <path d="m7 10 5 5 5-5" />
-      <path d="M5 19h14" />
-    </svg>
-  );
-}
-
-function FolderPlusIcon() {
-  return (
-    <svg viewBox="0 0 24 24" aria-hidden="true" className="nav-action-icon">
-      <path d="M3 7.5A2.5 2.5 0 0 1 5.5 5H9l2 2h7.5A2.5 2.5 0 0 1 21 9.5v7A2.5 2.5 0 0 1 18.5 19h-13A2.5 2.5 0 0 1 3 16.5z" />
-      <path d="M12 11v5" />
-      <path d="M9.5 13.5h5" />
-    </svg>
-  );
-}
-
 export default function App() {
   const [projects, setProjects] = useState([]);
+  const [environments, setEnvironments] = useState([]);
+  const [environmentLayout, setEnvironmentLayout] = useState(null);
+  const [workspace, setWorkspace] = useState(() => window.location.hash === '#environments' ? 'environments' : 'projects');
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [status, setStatus] = useState([]);
   const [selectedProjectId, setSelectedProjectId] = useState(null);
   const [selectedApiId, setSelectedApiId] = useState(null);
@@ -217,16 +205,42 @@ export default function App() {
   const [navApiType, setNavApiType] = useState('api');
   const [sseConnected, setSseConnected] = useState(false);
 
-  const sidebarResize = useDragResize({ initialSize: 320, minSize: 320, maxSize: 480, invert: false });
+  const [workbenchRef, workbenchWidth] = useContainerWidth();
+  const [preferredProjectSidebarWidth, setProjectSidebarWidth] = useState(320);
+  const [preferredProjectRailWidth, setProjectRailWidth] = useState(122);
+  const [preferredInterfaceSidebarWidth, setInterfaceSidebarWidth] = useState(198);
   const [contextMenu, setContextMenu] = useState(null);
-  const [collapsedProjects, setCollapsedProjects] = useState({});
+  const [sidebarProjectId, setSidebarProjectId] = useState(null);
+  const [interfaceFilters, setInterfaceFilters] = useState({});
+  const projectListRef = useRef(null);
+  const interfaceListRef = useRef(null);
+  const projectScrollTop = useRef(0);
+  const interfaceScrollPositions = useRef(new Map());
+  const visibleInterface = useRef(null);
+  const focusProjectId = useRef(null);
+  const focusInterfaceHeading = useRef(false);
+  const backToProjectsRef = useRef(null);
+  const [projectReload, setProjectReload] = useState(0);
   const [collapsedFolders, setCollapsedFolders] = useState({});
   const draftRef = useRef(null);
   const draftVersionRef = useRef(0);
   const savingRef = useRef(false);
   const pendingSaveRef = useRef(false);
   const dialogResolverRef = useRef(null);
+  const configInputRef = useRef(null);
   const [dialog, setDialog] = useState(null);
+
+  const sidebarShowsInterfaces = sidebarProjectId !== null && sidebarProjectId === selectedProjectId;
+  const sidebarLimit = Math.min(760, Math.max(340, Math.floor((workbenchWidth || 1440) * 0.57)));
+  const projectSidebarLimit = Math.min(480, sidebarLimit);
+  const projectRailLimit = Math.min(300, Math.floor(sidebarLimit * 0.4));
+  const interfaceSidebarLimit = sidebarLimit - projectRailLimit - 12;
+  const projectSidebarWidth = clampPanelWidth(preferredProjectSidebarWidth, minProjectSidebarWidth, projectSidebarLimit);
+  const projectRailWidth = clampPanelWidth(preferredProjectRailWidth, minProjectRailWidth, projectRailLimit);
+  const interfaceSidebarWidth = clampPanelWidth(preferredInterfaceSidebarWidth, minInterfaceSidebarWidth, interfaceSidebarLimit);
+  const interfaceKey = draft?.id === selectedProjectId && draft ? JSON.stringify([draft.id, navApiType]) : null;
+  const interfaceFilter = interfaceFilters[interfaceKey] || '';
+  const sidebarItemId = selectedApiId || selectedClientApiId || selectedGrpcMockId || selectedGrpcClientId;
 
   selectedProjectIdRef.current = selectedProjectId;
 
@@ -281,6 +295,36 @@ export default function App() {
     return openDialog({ kind: 'select', title, message, options, defaultValue });
   }
 
+  useEffect(() => {
+    function syncWorkspace() {
+      setWorkspace(window.location.hash === '#environments' ? 'environments' : 'projects');
+      setMobileNavOpen(false);
+    }
+    window.addEventListener('hashchange', syncWorkspace);
+    return () => window.removeEventListener('hashchange', syncWorkspace);
+  }, []);
+
+  useEffect(() => {
+    if (!mobileNavOpen) return undefined;
+    const closeOnEscape = (event) => {
+      if (event.key === 'Escape') setMobileNavOpen(false);
+    };
+    window.addEventListener('keydown', closeOnEscape);
+    return () => window.removeEventListener('keydown', closeOnEscape);
+  }, [mobileNavOpen]);
+
+  function navigateWorkspace(next) {
+    setMobileNavOpen(false);
+    setWorkspace(next);
+    window.location.hash = next;
+  }
+
+  const refreshEnvironments = useCallback(async () => {
+    const [entries, layout] = await Promise.all([api.listEnvironments(), api.getEnvironmentLayout()]);
+    setEnvironments(entries);
+    setEnvironmentLayout(layout);
+  }, []);
+
   const loadRequests = useCallback(async (projectId) => {
     const cached = readProjectRequestRecords(projectId);
     if (selectedProjectIdRef.current === projectId) setRequests(cached);
@@ -294,13 +338,13 @@ export default function App() {
   }, []);
 
   const refresh = useCallback(async () => {
-    const [p, s] = await Promise.all([api.listProjects(), api.projectStatus()]);
+    const [p, s] = await Promise.all([api.listProjects(), api.projectStatus(), refreshEnvironments()]);
     setProjects(p);
     setStatus(s);
     const pid = selectedProjectId || p[0]?.id;
     if (pid) await loadRequests(pid);
     if (!selectedProjectId && p.length) setSelectedProjectId(p[0].id);
-  }, [loadRequests, selectedProjectId]);
+  }, [loadRequests, selectedProjectId, refreshEnvironments]);
 
   useEffect(() => {
     refresh().catch((err) => setMessage(err.message));
@@ -332,6 +376,7 @@ export default function App() {
       if (event === 'projects') {
         refresh().catch(() => {});
       }
+      if (event === 'environments') refreshEnvironments().catch(() => {});
       if (event === 'requests_cleared') {
         if (payload?.projectId) clearProjectRequestRecords(payload.projectId, payload.apiId);
         else clearAllRequestRecords();
@@ -341,7 +386,7 @@ export default function App() {
       }
     }, setSseConnected);
     return unsub;
-  }, [refresh, paused, selectedProjectId, loadRequests]);
+  }, [refresh, paused, selectedProjectId, loadRequests, refreshEnvironments]);
 
   useEffect(() => {
     if (!selectedProjectId) {
@@ -356,12 +401,7 @@ export default function App() {
     let active = true;
     api.getProject(selectedProjectId).then((p) => {
       if (!active) return;
-      const environments = p.environments?.length ? p.environments : defaultEnvironments();
-      const normalized = normalizeDraftProject({
-        ...p,
-        environments,
-        activeEnvironmentId: p.activeEnvironmentId || environments[0]?.id,
-      });
+      const normalized = normalizeDraftProject(p);
       const intent = projectOpenIntentRef.current?.projectId === selectedProjectId
         ? projectOpenIntentRef.current
         : null;
@@ -391,7 +431,10 @@ export default function App() {
       if (ancestorIds.length) {
         setCollapsedFolders((prev) => {
           const next = { ...prev };
-          for (const folderId of ancestorIds) next[restored.type + ':' + folderId] = false;
+          for (const folderId of ancestorIds) {
+            const key = JSON.stringify([selectedProjectId, restored.type, folderId]);
+            if (!Object.hasOwn(next, key)) next[key] = false;
+          }
           return next;
         });
       }
@@ -402,7 +445,7 @@ export default function App() {
     return () => {
       active = false;
     };
-  }, [selectedProjectId, setMessage]);
+  }, [selectedProjectId, projectReload, setMessage]);
 
   useEffect(() => {
     if (!selectedProjectId || draft?.id !== selectedProjectId) return;
@@ -431,20 +474,74 @@ export default function App() {
     showSettings,
   ]);
 
-  useEffect(() => {
-    const frame = window.requestAnimationFrame(() => {
-      activeNavItemRef.current?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
-    });
-    return () => window.cancelAnimationFrame(frame);
-  }, [
-    selectedProjectId,
-    selectedApiId,
-    selectedClientApiId,
-    selectedGrpcMockId,
-    selectedGrpcClientId,
-    showProtoManager,
-    showSettings,
-  ]);
+  useLayoutEffect(() => {
+    if (workspace !== 'projects') return;
+    if (sidebarShowsInterfaces) {
+      if (focusInterfaceHeading.current && backToProjectsRef.current?.offsetWidth) {
+        backToProjectsRef.current.focus({ preventScroll: true });
+        focusInterfaceHeading.current = false;
+      }
+      return;
+    }
+    const list = projectListRef.current;
+    if (!list?.clientHeight) return;
+    list.scrollTop = projectScrollTop.current;
+    if (focusProjectId.current) {
+      const row = [...list.querySelectorAll('[data-project-id]')]
+        .find((button) => button.dataset.projectId === focusProjectId.current);
+      row?.focus({ preventScroll: true });
+      focusProjectId.current = null;
+    }
+  }, [sidebarShowsInterfaces, workspace, mobileNavOpen, projects.length]);
+
+  useLayoutEffect(() => {
+    const list = interfaceListRef.current;
+    if (!sidebarShowsInterfaces || workspace !== 'projects' || !list?.clientHeight || !interfaceKey) {
+      visibleInterface.current = null;
+      return;
+    }
+    const previous = visibleInterface.current;
+    if (previous?.key !== interfaceKey && interfaceScrollPositions.current.has(interfaceKey)) {
+      list.scrollTop = interfaceScrollPositions.current.get(interfaceKey);
+    } else if (previous?.key !== interfaceKey || previous.itemId !== sidebarItemId) {
+      const row = activeNavItemRef.current?.getBoundingClientRect();
+      if (row) {
+        const bounds = list.getBoundingClientRect();
+        if (row.top < bounds.top) list.scrollTop += row.top - bounds.top;
+        else if (row.bottom > bounds.bottom) list.scrollTop += row.bottom - bounds.bottom;
+      }
+    }
+    visibleInterface.current = { key: interfaceKey, itemId: sidebarItemId };
+  }, [sidebarShowsInterfaces, interfaceKey, sidebarItemId, workspace, mobileNavOpen]);
+
+  function changeInterfaceFilter(value) {
+    if (!interfaceKey || value === interfaceFilter) return;
+    interfaceScrollPositions.current.set(interfaceKey, 0);
+    if (interfaceListRef.current) interfaceListRef.current.scrollTop = 0;
+    setInterfaceFilters((filters) => ({ ...filters, [interfaceKey]: value }));
+  }
+
+  function rememberInterfaceScroll() {
+    if (interfaceKey && interfaceListRef.current) {
+      interfaceScrollPositions.current.set(interfaceKey, interfaceListRef.current.scrollTop);
+    }
+  }
+
+  async function enterProject(projectId) {
+    if (projectId !== selectedProjectId && dirty && !await saveDraft({ silent: true })) return;
+    if (sidebarShowsInterfaces) rememberInterfaceScroll();
+    if (projectListRef.current) projectScrollTop.current = projectListRef.current.scrollTop;
+    focusInterfaceHeading.current = !sidebarShowsInterfaces;
+    projectOpenIntentRef.current = null;
+    setSidebarProjectId(projectId);
+    setSelectedProjectId(projectId);
+  }
+
+  function backToProjects() {
+    rememberInterfaceScroll();
+    focusProjectId.current = sidebarProjectId;
+    setSidebarProjectId(null);
+  }
 
   const selectedStatus = useMemo(
     () => status.find((s) => s.id === selectedProjectId),
@@ -476,17 +573,15 @@ export default function App() {
   const selectedGrpcMock = selectedGrpcMockIndex >= 0 ? draft?.grpcMocks[selectedGrpcMockIndex] : null;
   const selectedGrpcClient = selectedGrpcClientIndex >= 0 ? draft?.grpcClients[selectedGrpcClientIndex] : null;
 
-  const projectClientHeaderRows = useMemo(
-    () => objToKv(draft?.clientHeaders),
-    [draft?.clientHeaders]
-  );
-
-  const projectClientCookieRows = useMemo(
-    () => objToKv(draft?.clientCookies),
-    [draft?.clientCookies]
-  );
-
   const activeSelection = selectedApi || selectedClientApi || selectedGrpcMock || selectedGrpcClient;
+  const activeType = selectedApi ? 'api' : selectedClientApi ? 'client-api' : selectedGrpcMock ? 'grpc-mock' : 'grpc-client';
+
+  function patchInterfaceIdentity(fields) {
+    updateDraft((project) => {
+      const item = project[folderConfig[activeType].itemsKey].find(({ id }) => id === activeSelection?.id);
+      if (item) Object.assign(item, fields);
+    });
+  }
 
   const logRecords = useMemo(() => {
     if (!activeSelection) return requests;
@@ -497,21 +592,15 @@ export default function App() {
     ));
   }, [requests, activeSelection, selectedApi, selectedGrpcMock]);
 
-  const logTitle = activeSelection?.name || draft?.name || '项目';
+  const projectReady = draft?.id === selectedProjectId && Boolean(draft);
+  const showMainNav = workspace === 'projects' && projectReady && Boolean(activeSelection);
+  const viewingInterface = !showSettings && !showProtoManager;
 
-  const logPath = selectedApi
-    ? ((selectedApi.match?.method || 'GET').toUpperCase() + ' ' + (selectedApi.match?.path || '/'))
-    : selectedClientApi
-      ? ((selectedClientApi.method || 'POST').toUpperCase() + ' ' + resolveClientApiUrl({
-        environments: draft?.environments,
-        activeEnvironmentId: draft?.activeEnvironmentId,
-        clientApi: selectedClientApi,
-      }))
-      : activeSelection
-        ? ('gRPC /' + [activeSelection.packageName, activeSelection.serviceName].filter(Boolean).join('.') + '/' + (activeSelection.methodName || 'Method'))
-        : null;
-
-  const showMainNav = draft && !showSettings && !showProtoManager && Boolean(activeSelection);
+  function openInterfaceView(view) {
+    setShowSettings(false);
+    setShowProtoManager(false);
+    setMainView(view);
+  }
 
   function updateDraft(updater) {
     setDraft((prev) => {
@@ -524,30 +613,6 @@ export default function App() {
       setDirty(true);
       return resolved;
     });
-  }
-
-  async function saveProjectPort(projectId, port, protocol = 'http') {
-    const num = Number(port);
-    if (!num || num < 1 || num > 65535) return;
-    const enabledKey = protocol === 'grpc' ? 'grpcEnabled' : 'enabled';
-    const portKey = protocol === 'grpc' ? 'grpcPort' : 'port';
-    setBusy(true);
-    try {
-      const project = projectId === draft?.id ? structuredClone(draft) : await api.getProject(projectId);
-      if (project[enabledKey]) return;
-      project[portKey] = num;
-      const saved = normalizeDraftProject(await api.saveProject(project));
-      if (draft?.id === projectId) {
-        setDraft(saved);
-        draftRef.current = saved;
-        setDirty(false);
-      }
-      await refresh();
-    } catch (err) {
-      setMessage(err.message);
-    } finally {
-      setBusy(false);
-    }
   }
 
   async function toggleMockService(projectId, nextEnabled, protocol = 'http') {
@@ -573,7 +638,7 @@ export default function App() {
 
   const saveDraft = useCallback(async ({ silent = false } = {}) => {
     const current = draftRef.current;
-    if (!current) return;
+    if (!current) return false;
     if (savingRef.current) {
       pendingSaveRef.current = true;
       return;
@@ -585,18 +650,21 @@ export default function App() {
     setBusy(true);
     try {
       const saved = normalizeDraftProject(await api.saveProject(current));
-      if (saveVersion === draftVersionRef.current) {
-        setDraft(saved);
-        draftRef.current = saved;
-        setSelectedProjectId(saved.id);
-        setDirty(false);
-      } else {
-        pendingSaveRef.current = true;
+      if (selectedProjectIdRef.current === saved.id) {
+        if (saveVersion === draftVersionRef.current) {
+          setDraft(saved);
+          draftRef.current = saved;
+          setDirty(false);
+        } else {
+          pendingSaveRef.current = true;
+        }
       }
       if (!silent) notify('已保存');
       await refresh();
+      return saveVersion === draftVersionRef.current;
     } catch (err) {
       notify(err.message, 'error');
+      return false;
     } finally {
       savingRef.current = false;
       setSaving(false);
@@ -610,14 +678,14 @@ export default function App() {
 
   useEffect(() => {
     function handleKeyDown(e) {
-      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's' && workspace === 'projects') {
         e.preventDefault();
         saveDraft();
       }
     }
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [saveDraft]);
+  }, [saveDraft, workspace]);
 
   useEffect(() => {
     if (!dirty || !draft) return undefined;
@@ -628,14 +696,17 @@ export default function App() {
   async function createProject() {
     setBusy(true);
     try {
-      const saved = normalizeDraftProject(await api.saveProject(emptyProject()));
+      const saved = normalizeDraftProject(await api.saveProject({ ...emptyProject(), activeEnvironmentId: environments[0]?.id }));
+      setSidebarProjectId(saved.id);
       setSelectedProjectId(saved.id);
       setDraft(saved);
       draftRef.current = saved;
       setDirty(false);
       setSelectedApiId(null);
-      setShowSettings(false);
+      projectOpenIntentRef.current = { projectId: saved.id, location: 'settings' };
+      setShowSettings(true);
       setShowProtoManager(false);
+      setMobileNavOpen(false);
       setMessage('项目已创建');
       await refresh();
     } catch (err) {
@@ -648,7 +719,9 @@ export default function App() {
   function openContextMenu(e, items) {
     e.preventDefault();
     e.stopPropagation();
-    setContextMenu({ x: e.clientX, y: e.clientY, items });
+    const trigger = e.type === 'click' ? e.currentTarget : null;
+    const anchor = trigger?.getBoundingClientRect();
+    setContextMenu({ x: anchor ? anchor.left : e.clientX, y: anchor ? anchor.bottom + 4 : e.clientY, items, trigger });
   }
 
   function getFolders(type) {
@@ -687,7 +760,7 @@ export default function App() {
   }
 
   function toggleFolder(type, folderId) {
-    const key = `${type}:${folderId}`;
+    const key = JSON.stringify([selectedProjectId, type, folderId]);
     setCollapsedFolders((prev) => ({ ...prev, [key]: !prev[key] }));
   }
 
@@ -843,6 +916,7 @@ export default function App() {
             packageName: service.packageName,
             serviceName: service.serviceName,
             methodName: method.name,
+            path: method.path,
             requestStream: method.requestStream,
             responseStream: method.responseStream,
           }))
@@ -854,20 +928,21 @@ export default function App() {
 
     let selectedMethod = null;
     if (availableMethods.length) {
-      const choice = await selectDialog({
+      const methods = availableMethods.map((method, index) => ({
+        ...method,
+        key: `method:${index}`,
+        name: method.methodName,
+        detail: `${method.protoName} · ${[method.packageName, method.serviceName].filter(Boolean).join('.')}`,
+      }));
+      const choice = await openDialog({
+        kind: 'grpc-method',
         title: '新建 ' + folderConfig[type].itemLabel,
-        message: '创建空白方法，或选择项目 Proto 中需要的方法。',
-        options: [
-          { value: 'manual', label: '空白方法（稍后关联 Proto）' },
-          ...availableMethods.map((method, index) => ({
-            value: 'method:' + index,
-            label: method.protoName + ' · ' + [method.packageName, method.serviceName].filter(Boolean).join('.') + '/' + method.methodName,
-          })),
-        ],
-        defaultValue: 'manual',
+        message: '选择项目 Proto 中的方法，或创建空白方法。',
+        methods,
+        defaultValue: emptyGrpcMethodOption.key,
       });
       if (choice === null) return;
-      if (choice.startsWith('method:')) selectedMethod = availableMethods[Number(choice.slice(7))];
+      selectedMethod = methods.find((method) => method.key === choice) || null;
     }
 
     const item = {
@@ -1041,6 +1116,7 @@ export default function App() {
   }
 
   function openProjectSettings(projectId) {
+    setMobileNavOpen(false);
     if (projectId !== selectedProjectId) {
       projectOpenIntentRef.current = { projectId, location: 'settings' };
     }
@@ -1074,7 +1150,7 @@ export default function App() {
     });
   }
 
-  async function importProjectFile(file) {
+  async function importConfigFile(file) {
     if (!file) return;
     setBusy(true);
     try {
@@ -1082,13 +1158,16 @@ export default function App() {
       const raw = await file.text();
       await api.importConfig(raw, true);
       const nextProjects = await api.listProjects();
-      const imported = nextProjects.find((p) => !beforeIds.has(p.id)) || nextProjects[nextProjects.length - 1];
+      const imported = nextProjects.find((p) => !beforeIds.has(p.id));
       if (imported?.id) {
+        if (sidebarShowsInterfaces) setSidebarProjectId(imported.id);
         setSelectedProjectId(imported.id);
         setShowSettings(false);
         setShowProtoManager(false);
+      } else if (selectedProjectIdRef.current) {
+        setProjectReload((version) => version + 1);
       }
-      setMessage('项目已导入');
+      setMessage('配置已导入');
       await refresh();
     } catch (err) {
       setMessage(err.message);
@@ -1169,37 +1248,23 @@ export default function App() {
     notify('接口已导出');
   }
 
-  function appendImportedItems(type, items, { host = '', environmentName = '' } = {}) {
+  async function appendImportedItems(type, items, { host = '', environmentName = '' } = {}) {
     if (!items.length) throw new Error('没有可导入的接口');
     const cfg = folderConfig[type];
-    updateDraft((project) => {
-      const previousClientCount = (project.clientApis || []).length;
-      project[cfg.itemsKey] = project[cfg.itemsKey] || [];
-      project[cfg.itemsKey].push(...items);
-
-      if (type === 'client-api' && host) {
-        project.environments = project.environments?.length ? project.environments : defaultEnvironments();
-        let environment = project.environments.find((entry) => entry.host === host);
-        const replaceDefault = !environment
-          && previousClientCount === 0
-          && project.environments.length === 1
-          && project.environments[0].host === 'http://localhost:8080';
-        if (replaceDefault) {
-          environment = project.environments[0];
-          environment.host = host;
-          if (environmentName) environment.name = environmentName;
-        } else if (!environment) {
-          const hostname = (() => { try { return new URL(host).hostname; } catch { return host; } })();
-          environment = {
-            id: crypto.randomUUID(),
-            name: environmentName || hostname || 'Imported',
-            host,
-          };
-          project.environments.push(environment);
-        }
-        project.activeEnvironmentId = environment.id;
+    let environment;
+    if (type === 'client-api' && host) {
+      const existing = await api.listEnvironments();
+      environment = existing.find((env) => env.host === host && env.id === draft?.activeEnvironmentId)
+        || existing.find((env) => env.host === host);
+      if (!environment) {
+        environment = await api.saveEnvironment({ name: environmentName || new URL(host).hostname, host });
+        await refreshEnvironments();
       }
-      return project;
+    }
+    updateDraft((project) => {
+      if (project.id !== draft.id) return project;
+      project[cfg.itemsKey].push(...items);
+      if (environment) project.activeEnvironmentId = environment.id;
     });
     selectItem(type, items[0].id);
     notify(items.length === 1 ? '接口已导入' : `已导入 ${items.length} 个接口`);
@@ -1265,7 +1330,7 @@ export default function App() {
     }
     if ((type === 'api' || type === 'client-api') && isOpenApiDocument(parsed)) {
       const result = importOpenApiDocument(parsed, { type, folderId });
-      appendImportedItems(type, result.items, { host: result.host, environmentName: result.title });
+      await appendImportedItems(type, result.items, { host: result.host, environmentName: result.title });
       return;
     }
     importExportedItem(type, parsed, folderId);
@@ -1273,12 +1338,28 @@ export default function App() {
 
   async function importItemCurl(type, command, folderId) {
     const result = importCurlCommand(command, { type, folderId });
-    appendImportedItems(type, result.items, { host: result.host });
+    await appendImportedItems(type, result.items, { host: result.host });
   }
 
   function openImportPanel(type, folderId = null) {
     const folder = getFolders(type).find((entry) => entry.id === folderId);
     setImportPanel({ type, folderId, folderName: folder?.name || '' });
+  }
+
+  function getItemActions(type, item) {
+    const rename = () => type === 'api' ? renameApi(item.id)
+      : type === 'client-api' ? renameClientApiItem(item.id) : renameGrpcItem(type, item.id);
+    const copy = () => type === 'api' ? copyApiItem(item.id)
+      : type === 'client-api' ? copyClientApiItem(item.id) : copyGrpcItem(type, item.id);
+    const remove = () => type === 'api' ? deleteApiItem(item.id)
+      : type === 'client-api' ? deleteClientApiItem(item.id) : deleteGrpcItem(type, item.id);
+    return [
+      { label: '重命名', onClick: rename },
+      { label: '复制', onClick: copy },
+      { label: '移动到文件夹', onClick: () => moveItemToFolder(type, item.id) },
+      { label: '导出接口', onClick: () => exportItem(type, item) },
+      { label: '删除', danger: true, onClick: remove },
+    ];
   }
 
   function renderNavItem(type, item, depth = 0) {
@@ -1288,18 +1369,16 @@ export default function App() {
         : type === 'grpc-mock' ? selectedGrpcMockId : selectedGrpcClientId;
     const active = activeId === item.id && !showSettings && !showProtoManager;
     const method = type === 'api' ? item.match?.method : type === 'client-api' ? item.method : 'RPC';
-    const select = () => selectItem(type, item.id);
-    const rename = () => type === 'api' ? renameApi(item.id)
-      : type === 'client-api' ? renameClientApiItem(item.id) : renameGrpcItem(type, item.id);
-    const copy = () => type === 'api' ? copyApiItem(item.id)
-      : type === 'client-api' ? copyClientApiItem(item.id) : copyGrpcItem(type, item.id);
-    const remove = () => type === 'api' ? deleteApiItem(item.id)
-      : type === 'client-api' ? deleteClientApiItem(item.id) : deleteGrpcItem(type, item.id);
+    const select = () => {
+      selectItem(type, item.id);
+      setMobileNavOpen(false);
+    };
     return (
       <button
         type="button"
         key={item.id}
         className={'nav-item ' + (active ? 'active' : '')}
+        aria-current={active ? 'true' : undefined}
         ref={active ? activeNavItemRef : undefined}
         style={{ paddingLeft: (8 + depth * 14) + 'px' }}
         onClick={select}
@@ -1310,11 +1389,7 @@ export default function App() {
         }}
         onContextMenu={(e) => openContextMenu(e, [
           { label: '编辑', onClick: select },
-          { label: '重命名', onClick: rename },
-          { label: '复制', onClick: copy },
-          { label: '移动到文件夹', onClick: () => moveItemToFolder(type, item.id) },
-          { label: '导出接口', onClick: () => exportItem(type, item) },
-          { label: '删除', danger: true, onClick: remove },
+          ...getItemActions(type, item),
         ])}
       >
         {isGrpc ? <span className="protocol-badge grpc sm">RPC</span> : <MethodBadge method={method} size="sm" />}
@@ -1327,7 +1402,7 @@ export default function App() {
     const cfg = folderConfig[type];
     const folders = getFolders(type);
     const items = getItems(type);
-    const key = `${type}:${folder.id}`;
+    const key = JSON.stringify([selectedProjectId, type, folder.id]);
     const collapsed = collapsedFolders[key] === true;
     const childFolders = getChildFolders(folders, folder.id);
     const childItems = items.filter((item) => item.folderId === folder.id);
@@ -1386,14 +1461,9 @@ export default function App() {
     const type = navApiType;
     const cfg = folderConfig[type];
     const isGrpc = type.startsWith('grpc-');
-    const direction = type.endsWith('client') || type === 'client-api' ? 'client' : 'mock';
-    const protocol = isGrpc ? 'grpc' : 'http';
-    const runtime = isGrpc ? selectedStatus?.grpc : selectedStatus;
-    const enabled = isGrpc ? draft.grpcEnabled === true : draft.enabled === true;
-    const port = isGrpc ? draft.grpcPort : draft.port;
-    const portKey = isGrpc ? 'grpcPort' : 'port';
 
     function switchType(nextType) {
+      rememberInterfaceScroll();
       const targetItems = getItems(nextType);
       const items = nextType.startsWith('grpc-') ? sortGrpcMethods(targetItems) : targetItems;
       const currentId = nextType === 'api' ? selectedApiId
@@ -1413,42 +1483,37 @@ export default function App() {
       selectItem(nextType, nextId);
     }
 
+    const query = interfaceFilter.trim().toLowerCase();
+    const filtered = query && getItems(type).filter((item) => (
+      [item.name, item.match?.path, item.url, item.methodName, item.serviceName]
+        .some((value) => value?.toLowerCase().includes(query))
+    ));
+
     return (
-      <div className="nav-api-shell">
-        <div className="nav-protocol-runtime">
-          <div className="nav-protocol-tabs">
-            <button type="button" className={protocol === 'http' ? 'active' : ''} onClick={() => switchType(direction === 'mock' ? 'api' : 'client-api')}>HTTP</button>
-            <button type="button" className={protocol === 'grpc' ? 'active' : ''} onClick={() => switchType(direction === 'mock' ? 'grpc-mock' : 'grpc-client')}>gRPC</button>
+      <>
+        <div className="nav-interface-tools">
+          <div className="nav-api-bar">
+            <select className="field nav-api-type" aria-label="接口类型" value={type} onChange={(event) => switchType(event.target.value)}>
+              <option value="api">HTTP Server</option>
+              <option value="client-api">HTTP Client</option>
+              <option value="grpc-mock">gRPC Server</option>
+              <option value="grpc-client">gRPC Client</option>
+            </select>
+            <button type="button" className="ghost sm nav-create-api" onClick={() => { changeInterfaceFilter(''); addItem(type); }}>新建接口</button>
+            <Dropdown trigger={<Icon name="more" />} label="接口列表操作" items={[
+              { label: '导入接口', onClick: () => openImportPanel(type) },
+              { label: '新建文件夹', onClick: () => addFolder(type) },
+              ...(isGrpc ? [{ label: '管理 Proto', onClick: openProtoManager }] : []),
+            ]} />
           </div>
-          <div className="nav-runtime-control" title={protocol.toUpperCase() + ' Mock Server'}>
-            <MockServiceSwitch
-              compact
-              enabled={enabled}
-              running={runtime?.running}
-              port={port}
-              busy={busy}
-              onToggle={(next) => toggleMockService(draft.id, next, protocol)}
-              onPortChange={(nextPort) => { if (!enabled && !runtime?.running) updateDraft((d) => { d[portKey] = nextPort; return d; }); }}
-              onPortBlur={(nextPort) => { if (!enabled && !runtime?.running) saveProjectPort(draft.id, nextPort, protocol); }}
-            />
-          </div>
+          <input className="field nav-filter" type="search" aria-label="筛选接口" placeholder="筛选名称或路径" value={interfaceFilter} onChange={(event) => changeInterfaceFilter(event.target.value)} />
         </div>
-        <div className="nav-api-bar" onDragOver={(e) => e.preventDefault()} onDrop={(e) => handleItemDrop(e, type, null)}>
-          <div className="nav-direction-tabs">
-            <button type="button" className={direction === 'mock' ? 'active' : ''} onClick={() => switchType(isGrpc ? 'grpc-mock' : 'api')}>Server</button>
-            <button type="button" className={direction === 'client' ? 'active' : ''} onClick={() => switchType(isGrpc ? 'grpc-client' : 'client-api')}>Client</button>
-          </div>
-          <div className="nav-api-actions">
-            <button type="button" className="icon-btn sm nav-import-btn" title="导入接口" aria-label="导入接口" onClick={() => openImportPanel(type)}>
-              <ImportIcon />
-            </button>
-            <button type="button" className="icon-btn sm" title="新建文件夹" aria-label="新建文件夹" onClick={() => addFolder(type)}><FolderPlusIcon /></button>
-            <button type="button" className="icon-btn sm" title={'新建 ' + cfg.itemLabel} aria-label={'新建 ' + cfg.itemLabel} onClick={() => addItem(type)}>+</button>
-            {isGrpc && <button type="button" className="nav-proto-import" title="管理项目 Proto" onClick={openProtoManager}>Proto</button>}
-          </div>
+        <div key={interfaceKey} className="nav-interface-list scroll-y" ref={interfaceListRef} onScroll={rememberInterfaceScroll}>
+          {query
+            ? filtered.length ? filtered.map((item) => renderNavItem(type, item)) : <div className="nav-list-empty">没有匹配的接口</div>
+            : renderFolderSection(type)}
         </div>
-        {renderFolderSection(type)}
-      </div>
+      </>
     );
   }
 
@@ -1456,55 +1521,40 @@ export default function App() {
     <div className="app">
       <header className="topbar">
         <div className="topbar-left">
-          <span className="logo">AMS</span>
-        </div>
-        <div className="topbar-center">
-          {showMainNav && (
-            <nav className="main-nav header-main-nav">
-              <button
-                type="button"
-                className={`main-nav-item ${mainView === 'edit' ? 'active' : ''}`}
-                onClick={() => setMainView('edit')}
-              >
-                Edit
-              </button>
-              <button
-                type="button"
-                className={`main-nav-item ${mainView === 'record' ? 'active' : ''}`}
-                onClick={() => setMainView('record')}
-              >
-                Record
-                {logRecords.length > 0 && <span className="nav-badge">{logRecords.length}</span>}
-              </button>
-            </nav>
-          )}
+          <div className="brand">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 2 9 5v10l-9 5-9-5V7zM3 7l9 5 9-5m-9 5v10" /></svg>
+            <span className="logo">Mockserver</span>
+          </div>
+          <nav className="workspace-navigation" aria-label="工作区">
+            <button type="button" aria-current={workspace === 'projects' ? 'page' : undefined} onClick={() => navigateWorkspace('projects')}>接口工作台</button>
+            <button type="button" aria-current={workspace === 'environments' ? 'page' : undefined} onClick={() => navigateWorkspace('environments')}>环境管理</button>
+          </nav>
         </div>
         <div className="topbar-right">
           <button
             type="button"
             className="icon-btn theme-toggle"
             title={theme === 'dark' ? '切换到浅色主题' : '切换到深色主题'}
+            aria-label={theme === 'dark' ? '切换到浅色主题' : '切换到深色主题'}
             onClick={() => setTheme((value) => (value === 'dark' ? 'light' : 'dark'))}
           >
-            {theme === 'dark' ? '☀' : '☾'}
+            <Icon name={theme === 'dark' ? 'sun' : 'moon'} />
           </button>
-          <button type="button" className="ghost" onClick={exportConfig}>导出</button>
-          <label className="ghost file-btn">
-            导入
-            <input
-              type="file"
-              accept=".yaml,.yml,.json"
-              hidden
-              onChange={(e) => {
-                const file = e.target.files?.[0];
-                if (!file) return;
-                file.text().then((raw) => api.importConfig(raw, true).then(() => {
-                  notify('配置已导入');
-                  refresh();
-                })).catch((err) => notify(err.message, 'error'));
-              }}
-            />
-          </label>
+          <Dropdown trigger={<Icon name="settings" />} label="配置" title="配置" items={[
+            { label: '导入配置', onClick: () => configInputRef.current?.click() },
+            { label: '导出全部配置', onClick: exportConfig },
+          ]} />
+          <input
+            ref={configInputRef}
+            type="file"
+            accept=".yaml,.yml,.json"
+            hidden
+            onChange={(e) => {
+              const file = e.target.files?.[0];
+              e.target.value = '';
+              importConfigFile(file);
+            }}
+          />
         </div>
       </header>
 
@@ -1513,115 +1563,138 @@ export default function App() {
           {notifications.map((item) => (
             <div key={item.id} className={`notification ${item.type}`}>
               <span>{item.text}</span>
-              <button type="button" onClick={() => dismissNotification(item.id)}>×</button>
+              <button type="button" aria-label="关闭通知" onClick={() => dismissNotification(item.id)}><Icon name="close" /></button>
             </div>
           ))}
         </div>
       )}
 
-      <div className="shell">
-        <aside className="nav scroll-y" style={{ width: sidebarResize.size, flexShrink: 0 }}>
-          <div className="nav-head">
-            <span>项目</span>
-            <Dropdown
-              align="right"
-              trigger="+"
-              items={[
-                { label: '新建项目', onClick: createProject },
-                {
-                  label: '导入项目',
-                  fileInput: true,
-                  accept: '.yaml,.yml,.json',
-                  onFile: importProjectFile,
-                },
-              ]}
-            />
-          </div>
-          <div className="nav-tree">
-            {projects.map((p) => {
-              const st = status.find((s) => s.id === p.id);
-              const active = selectedProjectId === p.id;
-              const collapsed = collapsedProjects[p.id] === true;
-              const expanded = active && !collapsed;
-              const selectProject = () => {
-                setCollapsedProjects((prev) => ({ ...prev, [p.id]: false }));
-                if (selectedProjectId === p.id) {
-                  setShowSettings(false);
-                  setShowProtoManager(false);
-                  return;
-                }
-                projectOpenIntentRef.current = null;
-                setSelectedProjectId(p.id);
-              };
-              return (
-                <div key={p.id} className="nav-group">
-                  <div
-                    className={`nav-project ${active ? 'active' : ''}`}
-                    onContextMenu={(e) => openContextMenu(e, [
-                      { label: '项目设置', onClick: () => openProjectSettings(p.id) },
-                      { label: '导出项目', onClick: () => exportProjectFile(p.id, p.name) },
-                      { label: '重启服务', onClick: () => api.restartProject(p.id) },
-                      {
-                        label: '删除项目',
-                        danger: true,
-                        onClick: async () => {
-                          const confirmed = await confirmDialog({ title: '删除项目', message: '确定删除项目？', danger: true, confirmLabel: '删除' });
-                          if (!confirmed) return;
-                          api.deleteProject(p.id).then(() => {
-                            removeProjectActivity(p.id);
-                            clearProjectRequestRecords(p.id);
-                            setSelectedProjectId(null);
-                            refresh();
-                          });
-                        },
-                      },
-                    ])}
-                  >
-                    <button
-                      type="button"
-                      className="nav-project-caret"
-                      aria-label={expanded ? `折叠项目 ${p.name}` : `展开项目 ${p.name}`}
-                      aria-expanded={expanded}
-                      onClick={() => {
-                        if (!active) {
-                          selectProject();
-                          return;
-                        }
-                        setCollapsedProjects((prev) => ({ ...prev, [p.id]: !collapsed }));
-                      }}
-                    >
-                      {expanded ? '⌄' : '›'}
-                    </button>
-                    <button type="button" className="nav-project-main" onClick={selectProject}>
-                      <span className="nav-name">{p.name}</span>
-                      <span className={'project-protocol-dot ' + (st?.running ? 'on' : '')} title={'HTTP :' + p.port}>H</span>
-                      <span className={'project-protocol-dot ' + (st?.grpc?.running ? 'on' : '')} title={'gRPC :' + (p.grpcPort || 50051)}>G</span>
-                    </button>
-                  </div>
+      <main className="environment-shell" hidden={workspace !== 'environments'}>
+        <EnvironmentManager
+          environments={environments}
+          layout={environmentLayout}
+          projects={projects}
+          onRefresh={refreshEnvironments}
+          onNotify={notify}
+          onMenu={openContextMenu}
+          promptDialog={promptDialog}
+          selectDialog={selectDialog}
+          confirmDialog={confirmDialog}
+        />
+      </main>
+      <div ref={workbenchRef} className="shell" hidden={workspace !== 'projects'}>
+        {mobileNavOpen && <button type="button" className="mobile-nav-backdrop" aria-label="关闭项目导航" onClick={() => setMobileNavOpen(false)} />}
+        <aside id="project-navigation" aria-label="项目和接口" className={`nav ${mobileNavOpen ? 'mobile-open' : ''} ${sidebarShowsInterfaces ? 'drawer-open' : ''}`} style={{ '--project-sidebar-width': `${projectSidebarWidth}px`, '--project-rail-width': `${projectRailWidth}px`, '--interface-sidebar-width': `${interfaceSidebarWidth}px` }}>
+            <nav id="project-sidebar" className="sidebar-panel project-sidebar" aria-label="项目导航">
+              <div className="nav-head">
+                <strong>项目</strong>
+                <button type="button" className="ghost sm project-add" onClick={createProject} disabled={busy} aria-label="新建项目" title="新建项目">
+                  {sidebarShowsInterfaces ? <Icon name="plus" /> : '新建项目'}
+                </button>
+              </div>
+              <div className="nav-tree scroll-y" ref={projectListRef} aria-label="项目列表" onScroll={(event) => { projectScrollTop.current = event.currentTarget.scrollTop; }}>
+                {projects.map((p) => {
+                  const active = selectedProjectId === p.id;
+                  return (
+                    <div key={p.id} className="nav-group">
+                      <div
+                        className={`nav-project ${active ? 'active' : ''}`}
+                        onContextMenu={(e) => openContextMenu(e, [
+                          { label: '项目设置', onClick: () => openProjectSettings(p.id) },
+                          { label: '导出项目', onClick: () => exportProjectFile(p.id, p.name) },
+                          { label: '重启服务', onClick: () => api.restartProject(p.id) },
+                          {
+                            label: '删除项目',
+                            danger: true,
+                            onClick: async () => {
+                              const confirmed = await confirmDialog({ title: '删除项目', message: '确定删除项目？', danger: true, confirmLabel: '删除' });
+                              if (!confirmed) return;
+                              api.deleteProject(p.id).then(() => {
+                                removeProjectActivity(p.id);
+                                clearProjectRequestRecords(p.id);
+                                setSelectedProjectId(null);
+                                refresh();
+                              });
+                            },
+                          },
+                        ])}
+                      >
+                        <button type="button" className="nav-project-main" data-project-id={p.id} aria-current={active ? 'true' : undefined} aria-controls="interface-drawer" aria-expanded={active && sidebarShowsInterfaces} title={p.name} disabled={busy && !active} onClick={() => enterProject(p.id)}>
+                          <span className="nav-name">{p.name}</span>
+                        </button>
+                      </div>
 
-                  {expanded && draft && (
-                    <div className="nav-items">
-                      {renderApiNavTabs()}
                     </div>
-                  )}
-                </div>
-              );
-            })}
-          </div>
+                  );
+                })}
+              </div>
+            </nav>
+          {sidebarShowsInterfaces && (
+            <PanelDivider className="project-rail-divider" label="调整项目列表宽度" controls="project-sidebar" width={projectRailWidth} min={minProjectRailWidth} max={projectRailLimit} onResize={setProjectRailWidth} />
+          )}
+          <InterfaceDrawer
+            open={sidebarShowsInterfaces}
+            projectName={draft?.id === selectedProjectId ? draft.name : projects.find((project) => project.id === sidebarProjectId)?.name}
+            closeRef={backToProjectsRef}
+            onClose={backToProjects}
+          >
+            {interfaceKey ? renderApiNavTabs() : <div className="nav-list-empty" role="status">加载中…</div>}
+          </InterfaceDrawer>
         </aside>
-        <div
-          className="split-handle shell-handle"
-          onMouseDown={sidebarResize.onMouseDown}
-          role="separator"
-          aria-orientation="vertical"
+        <PanelDivider
+          className="shell-handle"
+          label={sidebarShowsInterfaces ? '调整接口列表宽度' : '调整项目列表宽度'}
+          controls={sidebarShowsInterfaces ? 'interface-drawer' : 'project-sidebar'}
+          width={sidebarShowsInterfaces ? interfaceSidebarWidth : projectSidebarWidth}
+          min={sidebarShowsInterfaces ? minInterfaceSidebarWidth : minProjectSidebarWidth}
+          max={sidebarShowsInterfaces ? interfaceSidebarLimit : projectSidebarLimit}
+          onResize={sidebarShowsInterfaces ? setInterfaceSidebarWidth : setProjectSidebarWidth}
         />
 
-        <div className="content">
+        <main className="content">
+          <div className="workspace-bar">
+            <div className="workspace-context">
+              <button type="button" className="ghost mobile-nav-toggle" aria-expanded={mobileNavOpen} aria-controls="project-navigation" onClick={() => setMobileNavOpen((open) => !open)}>{sidebarShowsInterfaces ? '接口' : '项目'}</button>
+              {projectReady && <strong title={draft.name}>{draft.name}</strong>}
+              {projectReady && activeSelection && viewingInterface && (
+                <>
+                  <span className="workspace-divider" aria-hidden="true">/</span>
+                  {mainView === 'edit' ? (
+                    <>
+                      <input
+                        key={activeSelection.id}
+                        className="workspace-interface-name"
+                        aria-label="接口名称"
+                        title={activeSelection.name}
+                        placeholder="接口名称"
+                        value={activeSelection.name || ''}
+                        onChange={(event) => patchInterfaceIdentity({ name: event.target.value })}
+                      />
+                      {(selectedApi || selectedGrpcMock) && (
+                        <label className="toggle-switch workspace-mock-toggle" title="启用 Mock 接口">
+                          <input type="checkbox" aria-label="启用 Mock 接口" checked={activeSelection.enabled !== false} onChange={(event) => patchInterfaceIdentity({ enabled: event.target.checked })} />
+                          <span className="toggle-track" />
+                        </label>
+                      )}
+                    </>
+                  ) : <span className="workspace-interface-label" title={activeSelection.name}>{activeSelection.name}</span>}
+                </>
+              )}
+            </div>
+            <nav className="workspace-actions" aria-label="项目视图">
+              {showMainNav && <>
+                <button type="button" className="ghost" aria-pressed={viewingInterface && mainView === 'edit'} onClick={() => openInterfaceView('edit')}>编辑</button>
+                <button type="button" className="ghost" aria-pressed={viewingInterface && mainView === 'record'} onClick={() => openInterfaceView('record')}>记录 {logRecords.length > 0 && <span className="nav-badge">{logRecords.length}</span>}</button>
+              </>}
+              {projectReady && <button type="button" className="ghost" aria-pressed={showSettings} onClick={() => openProjectSettings(draft.id)}>项目设置</button>}
+            </nav>
+          </div>
           <div className="main-body">
-            {!draft ? (
+            {!projectReady ? (
               <div className="placeholder">
-                <p>选择或创建一个项目</p>
-                <button type="button" className="primary" onClick={createProject}>创建项目</button>
+                {selectedProjectId
+                  ? <span role="status">加载中…</span>
+                  : <button type="button" className="primary" onClick={createProject}>创建项目</button>}
               </div>
             ) : showSettings ? (
               <div className="page-scroll">
@@ -1630,8 +1703,7 @@ export default function App() {
                   running={selectedStatus?.running}
                   grpcRunning={selectedStatus?.grpc?.running}
                   busy={busy}
-                  clientHeaderRows={projectClientHeaderRows}
-                  clientCookieRows={projectClientCookieRows}
+                  environments={environments}
                   onChange={updateDraft}
                   onToggleService={(next) => toggleMockService(draft.id, next, 'http')}
                   onToggleGrpcService={(next) => toggleMockService(draft.id, next, 'grpc')}
@@ -1662,8 +1734,6 @@ export default function App() {
             ) : mainView === 'record' && activeSelection ? (
               <RequestLogPanel
                 records={logRecords}
-                contextLabel={logTitle}
-                contextPath={logPath}
                 onRefresh={() => loadRequests(draft.id)}
                 onClear={clearLogs}
                 paused={paused}
@@ -1679,15 +1749,14 @@ export default function App() {
                 protos={draft.protos}
                 item={selectedGrpcClient}
                 itemIndex={selectedGrpcClientIndex}
-                environments={draft.environments}
-                activeEnvironmentId={draft.activeEnvironmentId}
+                project={draft}
+                environments={environments}
                 onProjectPatch={updateDraft}
                 onChange={updateDraft}
-                onRemove={() => deleteGrpcItem('grpc-client', selectedGrpcClient.id)}
+                actions={getItemActions('grpc-client', selectedGrpcClient)}
                 onSave={saveDraft}
                 onSent={() => loadRequests(draft.id)}
                 busy={busy}
-                onManageProtos={openProtoManager}
               />
             ) : selectedGrpcMock ? (
               <GrpcEditor
@@ -1699,34 +1768,21 @@ export default function App() {
                 item={selectedGrpcMock}
                 itemIndex={selectedGrpcMockIndex}
                 onChange={updateDraft}
-                onRemove={() => deleteGrpcItem('grpc-mock', selectedGrpcMock.id)}
+                actions={getItemActions('grpc-mock', selectedGrpcMock)}
                 onSave={saveDraft}
                 busy={busy}
-                onManageProtos={openProtoManager}
               />
             ) : selectedClientApi ? (
               <ClientApiEditor
                   key={selectedClientApi.id}
                   projectId={draft.id}
-                  projectResetKey={draft.id}
-                  projectHeaders={draft.clientHeaders}
-                  projectCookies={draft.clientCookies}
-                  environments={draft.environments}
-                  activeEnvironmentId={draft.activeEnvironmentId}
+                  project={draft}
+                  environments={environments}
                   onProjectPatch={updateDraft}
                   clientApi={selectedClientApi}
                   clientApiIndex={selectedClientApiIndex}
                   onChange={updateDraft}
-                  onRemove={async () => {
-                    const confirmed = await confirmDialog({ title: '删除 API', message: '确定删除该 API？', danger: true, confirmLabel: '删除' });
-                    if (!confirmed) return;
-                    const removedId = selectedClientApiId;
-                    updateDraft((d) => {
-                      d.clientApis = (d.clientApis || []).filter((a) => a.id !== removedId);
-                      setSelectedClientApiId(d.clientApis[0]?.id || null);
-                      return d;
-                    });
-                  }}
+                  actions={getItemActions('client-api', selectedClientApi)}
                   onSave={saveDraft}
                   busy={busy}
                 onSent={() => loadRequests(draft.id)}
@@ -1737,26 +1793,19 @@ export default function App() {
                   api={selectedApi}
                   apiIndex={selectedApiIndex}
                   onChange={updateDraft}
-                  onRemove={async () => {
-                    const confirmed = await confirmDialog({ title: '删除 API', message: '确定删除该 API？', danger: true, confirmLabel: '删除' });
-                    if (!confirmed) return;
-                    const removedId = selectedApiId;
-                    updateDraft((d) => {
-                      d.apis = d.apis.filter((a) => a.id !== removedId);
-                      setSelectedApiId(d.apis[0]?.id || null);
-                      return d;
-                    });
-                  }}
+                  actions={getItemActions('api', selectedApi)}
                 onSave={saveDraft}
                 busy={busy}
               />
             ) : (
               <div className="placeholder">
-                <p>选择一个 HTTP 或 gRPC 的 Mock Server/Client 接口</p>
+                {getItems(navApiType).length > 0
+                  ? <span>请选择接口</span>
+                  : <span>暂无接口</span>}
               </div>
             )}
           </div>
-        </div>
+        </main>
       </div>
 
       {importPanel && (
@@ -1771,7 +1820,12 @@ export default function App() {
 
       {dialog && (
         <div className="modal-backdrop" role="presentation" onMouseDown={() => resolveDialog(null)}>
-          <div className="app-dialog" role="dialog" aria-modal="true" aria-label={dialog.title} onMouseDown={(e) => e.stopPropagation()}>
+          <div className="app-dialog" role="dialog" aria-modal="true" aria-label={dialog.title} onMouseDown={(e) => e.stopPropagation()} onKeyDown={(event) => {
+            if (dialog.kind === 'grpc-method' && event.key === 'Escape') {
+              event.stopPropagation();
+              resolveDialog(null);
+            }
+          }}>
             <header className="app-dialog-head">
               <h3>{dialog.title}</h3>
               {dialog.message && <p>{dialog.message}</p>}
@@ -1800,6 +1854,15 @@ export default function App() {
                 ))}
               </select>
             )}
+            {dialog.kind === 'grpc-method' && (
+              <GrpcMethodPicker
+                inDialog
+                methods={dialog.methods}
+                pinnedMethod={emptyGrpcMethodOption}
+                selectedMethod={dialog.methods.find((method) => method.key === dialog.selectValue) || emptyGrpcMethodOption}
+                onSelect={(method) => setDialog((current) => ({ ...current, selectValue: method.key }))}
+              />
+            )}
             <footer className="app-dialog-actions">
               <button type="button" className="ghost" onClick={() => resolveDialog(null)}>取消</button>
               <button
@@ -1807,7 +1870,7 @@ export default function App() {
                 className={dialog.danger ? 'primary danger-primary' : 'primary'}
                 onClick={() => {
                   if (dialog.kind === 'confirm') resolveDialog(true);
-                  else if (dialog.kind === 'select') resolveDialog(dialog.selectValue);
+                  else if (dialog.kind === 'select' || dialog.kind === 'grpc-method') resolveDialog(dialog.selectValue);
                   else resolveDialog(dialog.inputValue);
                 }}
               >
@@ -1823,6 +1886,7 @@ export default function App() {
           x={contextMenu.x}
           y={contextMenu.y}
           items={contextMenu.items}
+          trigger={contextMenu.trigger}
           onClose={() => setContextMenu(null)}
         />
       )}

@@ -41,15 +41,13 @@ function recordStatusLabel(record) {
 }
 
 export default function RequestDetail({ record }) {
-  if (!record) {
-    return <div className="record-detail empty"><p>← 选择一条记录查看详情</p></div>;
-  }
-
   const inbound = record.direction !== 'outbound';
+  const destination = record.url || record.path;
   const metadataLabel = record.protocol === 'grpc' ? 'Metadata' : 'Headers';
 
   return (
     <div className="record-detail">
+      {destination && <code className="record-path">{record.method} {destination}</code>}
       <div className="detail-summary">
         <span className={`detail-status ${recordStatusClass(record)}`}>{recordStatusLabel(record)}</span>
         <div className="detail-info">

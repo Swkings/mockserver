@@ -16,7 +16,7 @@ const app = express();
 const engine = new RuntimeEngine(store);
 
 app.use(cors());
-app.use(express.json({ limit: '10mb' }));
+app.use(express.json({ limit: '40mb' }));
 app.use(express.text({ type: ['application/x-yaml', 'text/yaml', 'text/plain'], limit: '10mb' }));
 
 app.use('/api', createRoutes(store, engine));

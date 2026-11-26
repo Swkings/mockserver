@@ -7,7 +7,7 @@ Mockserver 是一个带可视化管理界面的本地 Mock 服务工具，用于
 - 多项目管理，HTTP 与 gRPC Mock 服务可独立启停
 - HTTP 请求匹配、自定义响应和延迟响应
 - 基于 Proto 的 gRPC Mock 与 gRPC Client
-- HTTP Client 请求管理，支持环境、公共 Headers 和 Cookies
+- 全局环境管理，支持公共 Headers、Cookies 和按服务 Key 配置的 NodePort
 - 实时请求记录，查看请求、响应、耗时和匹配结果
 - 使用目录组织 HTTP、gRPC Mock 和 Client 配置
 - 项目配置导入与导出，支持从 OpenAPI / Swagger 文件或 cURL 命令导入 HTTP 接口
@@ -62,6 +62,14 @@ npm start
 5. 在请求记录中查看实时调用信息和匹配结果。
 
 HTTP Mock、HTTP Client、gRPC Mock 和 gRPC Client 均可使用目录进行分类管理。接口列表中的导入面板支持 OpenAPI 3、Swagger 2（YAML / JSON）和 cURL 文本；原有的单接口配置文件也可以继续导入。项目配置可通过界面导入或导出，便于备份和迁移。
+
+### 共享环境与 NodePort
+
+1. 在顶部「环境管理」中新建环境，配置服务网关地址、gRPC 网关地址和公共 Headers、Cookies。环境列表支持拖动排序、嵌套文件夹和引用计数。
+2. 在「项目设置」中设置唯一的服务 Key，并为项目选择环境。HTTP 请求按「环境 → 服务 → 接口」合并 Headers 和 Cookies，同名值以后一级为准。Header 名称不区分大小写。
+3. 若要直连，在 NodePort 页签中配置各服务的 HTTP 和 gRPC 直连地址。回到项目或接口调试器，将连接模式切到「NodePort 直连」。留空的 gRPC 直连地址沿用同一服务的 HTTP NodePort。直连时 HTTP 跳过环境的公共 Cookies，并保留公共 Headers、服务 Cookies 与接口 Cookies。
+
+旧配置中的项目环境列表会迁入全局环境。旧的项目级 Headers 和 Cookies 会继续作为服务覆盖项。配置文件将共享环境保存于顶层 `environments`，项目通过 `activeEnvironmentId` 引用。
 
 ## 可用命令
 

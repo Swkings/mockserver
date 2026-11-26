@@ -1,4 +1,5 @@
 import { useEffect, useId, useMemo, useRef, useState } from 'react';
+import Icon from './Icon.jsx';
 import { filterGrpcMethods, moveGrpcMethodIndex } from '../utils/grpc.js';
 
 function methodType(method) {
@@ -8,7 +9,9 @@ function methodType(method) {
   return 'Unary';
 }
 
-export default function GrpcMethodPicker({ methods, selectedMethod, currentMethodName, onSelect }) {
+export default function GrpcMethodPicker({
+  methods, selectedMethod, currentMethodName, onSelect, pinnedMethod, inDialog = false,
+}) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
   const [activeIndex, setActiveIndex] = useState(-1);
@@ -17,7 +20,10 @@ export default function GrpcMethodPicker({ methods, selectedMethod, currentMetho
   const filterRef = useRef(null);
   const optionRefs = useRef([]);
   const listboxId = useId();
-  const filteredMethods = useMemo(() => filterGrpcMethods(methods, query), [methods, query]);
+  const filteredMethods = useMemo(() => {
+    const matches = filterGrpcMethods(methods, query);
+    return pinnedMethod && filterGrpcMethods([pinnedMethod], query).length ? [pinnedMethod, ...matches] : matches;
+  }, [methods, pinnedMethod, query]);
 
   useEffect(() => {
     if (!open) return undefined;
@@ -27,8 +33,8 @@ export default function GrpcMethodPicker({ methods, selectedMethod, currentMetho
         setQuery('');
       }
     };
-    document.addEventListener('mousedown', handlePointerDown);
-    return () => document.removeEventListener('mousedown', handlePointerDown);
+    document.addEventListener('pointerdown', handlePointerDown);
+    return () => document.removeEventListener('pointerdown', handlePointerDown);
   }, [open]);
 
   useEffect(() => {
@@ -46,7 +52,7 @@ export default function GrpcMethodPicker({ methods, selectedMethod, currentMetho
   function closeMenu({ restoreFocus = false } = {}) {
     setOpen(false);
     setQuery('');
-    if (restoreFocus) window.requestAnimationFrame(() => triggerRef.current?.focus());
+    if (restoreFocus) triggerRef.current?.focus({ preventScroll: true });
   }
 
   function choose(method) {
@@ -65,24 +71,28 @@ export default function GrpcMethodPicker({ methods, selectedMethod, currentMetho
       choose(filteredMethods[activeIndex]);
     } else if (event.key === 'Escape') {
       event.preventDefault();
+      event.stopPropagation();
       closeMenu({ restoreFocus: true });
     }
   }
 
-  const disabled = methods.length === 0;
+  const disabled = !pinnedMethod && methods.length === 0;
   const activeDescendant = activeIndex >= 0 ? `${listboxId}-option-${activeIndex}` : undefined;
 
   return (
-    <div className="grpc-method-picker" ref={rootRef}>
+    <div className={`grpc-method-picker ${inDialog ? 'dialog-method-picker' : ''}`} ref={rootRef} onBlur={(event) => {
+      if (open && !event.currentTarget.contains(event.relatedTarget)) closeMenu();
+    }}>
       <button
         ref={triggerRef}
         type="button"
         className="grpc-method-trigger"
         disabled={disabled}
-        role="combobox"
+        autoFocus={inDialog}
+        aria-haspopup="listbox"
         aria-label="选择 RPC Method"
         aria-expanded={open}
-        aria-controls={listboxId}
+        aria-controls={open ? listboxId : undefined}
         onClick={() => {
           if (open) closeMenu();
           else setOpen(true);
@@ -94,17 +104,24 @@ export default function GrpcMethodPicker({ methods, selectedMethod, currentMetho
           }
         }}
       >
-        <span className="grpc-method-trigger-name">{selectedMethod?.name || currentMethodName || '暂无可用 Method'}</span>
-        {selectedMethod && <span className="grpc-method-trigger-type">{methodType(selectedMethod)}</span>}
-        <span className="grpc-method-trigger-caret" aria-hidden="true">⌄</span>
+        <span className="grpc-method-choice">
+          <span className="grpc-method-trigger-name">{selectedMethod?.name || currentMethodName || '暂无可用 Method'}</span>
+          {selectedMethod?.detail && <small title={selectedMethod.detail}>{selectedMethod.detail}</small>}
+        </span>
+        {selectedMethod && selectedMethod !== pinnedMethod && <span className="grpc-method-trigger-type">{methodType(selectedMethod)}</span>}
+        <span className="grpc-method-trigger-caret"><Icon name="down" /></span>
       </button>
       {open && (
         <div className="grpc-method-menu">
           <div className="grpc-method-filter">
             <input
               ref={filterRef}
+              className="field"
+              role="combobox"
+              aria-autocomplete="list"
+              aria-expanded="true"
               value={query}
-              placeholder="筛选 Method"
+              placeholder={inDialog ? '筛选方法或 Proto' : '筛选 Method'}
               aria-label="筛选 RPC Method"
               aria-controls={listboxId}
               aria-activedescendant={activeDescendant}
@@ -126,8 +143,11 @@ export default function GrpcMethodPicker({ methods, selectedMethod, currentMetho
                 onMouseDown={(event) => event.preventDefault()}
                 onClick={() => choose(method)}
               >
-                <span>{method.name}</span>
-                <small>{methodType(method)}</small>
+                <span className="grpc-method-choice">
+                  <span>{method.name}</span>
+                  {method.detail && <small title={method.detail}>{method.detail}</small>}
+                </span>
+                {method !== pinnedMethod && <small className="grpc-method-trigger-type">{methodType(method)}</small>}
               </button>
             ))}
             {filteredMethods.length === 0 && <div className="grpc-method-empty">没有匹配的方法</div>}

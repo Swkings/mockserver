@@ -38,3 +38,19 @@ test('client and server URL resolution preserve empty path parameters', () => {
 test('still URL-encodes ordinary path parameter values', () => {
   assert.equal(applyPathParams('/users/:id', { id: 'a/b c' }), '/users/a%2Fb%20c');
 });
+
+test('NodePort resolution uses the service key and preserves HTTP path and query', () => {
+  const project = {
+    activeEnvironmentId: 'test',
+    environments: [{
+      id: 'test', host: 'https://gateway.example.test/base',
+      nodePorts: { orders: { ip: '2001:db8::1', port: 30080, protocol: 'http' } },
+    }],
+    serviceKey: 'orders',
+    nodePortEnabled: true,
+  };
+  const clientApi = { url: 'https://other.example.test/orders/{id}', pathParams: { id: 'one/two' }, queryParams: { batch: 2 } };
+  assert.equal(resolveServerUrl(project, clientApi), 'http://[2001:db8::1]:30080/orders/one%2Ftwo?batch=2');
+  assert.equal(resolveClientUrl({ ...project, clientApi }), resolveServerUrl(project, clientApi));
+  assert.equal(resolveServerUrl({ ...project, serviceKey: 'missing' }, clientApi), '');
+});

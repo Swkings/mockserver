@@ -19,8 +19,6 @@ function recordStatusLabel(record) {
 
 export default function RequestLogPanel({
   records,
-  contextLabel,
-  contextPath,
   onRefresh,
   onClear,
   paused,
@@ -42,13 +40,14 @@ export default function RequestLogPanel({
   const listPanel = (
     <div className="record-list-inner scroll-y">
       {sorted.length === 0 ? (
-        <div className="record-empty">暂无记录，调用 Client 或向 Mock Server 发送请求后将显示在这里</div>
+        <div className="record-empty">暂无记录</div>
       ) : (
         sorted.map((r) => (
           <button
             type="button"
             key={r.id}
             className={`record-item ${selected?.id === r.id ? 'selected' : ''}`}
+            aria-pressed={selected?.id === r.id}
             onClick={() => setSelectedId(r.id)}
           >
             <span className="record-time">{formatTime(r.timestamp)}</span>
@@ -66,29 +65,24 @@ export default function RequestLogPanel({
   return (
     <div className="record-page">
       <div className="record-header">
-        <div className="record-context">
-          {contextLabel && <h2>{contextLabel}</h2>}
-          {contextPath && <p className="record-path">{contextPath}</p>}
-        </div>
         <div className="record-toolbar">
-          <span className="record-count">{sorted.length} 条</span>
-          <span className={`live-dot ${sseConnected ? 'on' : ''}`} title={sseConnected ? '实时' : '轮询'} />
+          {!paused && <span className="record-update-mode"><span className={`live-dot ${sseConnected ? 'on' : ''}`} aria-hidden="true" />{sseConnected ? '实时' : '轮询'}</span>}
           <button type="button" className="ghost" onClick={onTogglePause}>
             {paused ? '继续' : '暂停'}
           </button>
           <button type="button" className="ghost" onClick={onRefresh}>刷新</button>
-          <button type="button" className="ghost danger" onClick={onClear}>清空</button>
+          <button type="button" className="ghost danger" disabled={!sorted.length} onClick={onClear}>清空</button>
         </div>
       </div>
 
       <SplitPane
-        className="record-split"
+        className={`record-split ${selected ? '' : 'record-split-empty'}`}
         resizeSide="left"
         initialLeftWidth={220}
         minLeft={160}
         minRight={400}
         left={listPanel}
-        right={<RequestDetail record={selected} />}
+        right={selected && <RequestDetail record={selected} />}
       />
     </div>
   );

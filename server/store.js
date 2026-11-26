@@ -1,62 +1,15 @@
 import fs from 'node:fs';
+import { createHash } from 'node:crypto';
 import path from 'node:path';
+import { isIP } from 'node:net';
 import { fileURLToPath } from 'node:url';
 import yaml from 'js-yaml';
 import { v4 as uuidv4 } from 'uuid';
 import { normalizeBodyPresets } from './utils/bodyPresets.js';
 import { normalizeProjectGrpcProtos } from './utils/grpcProtos.js';
 
-const PARAM_RE = /:([a-zA-Z_][a-zA-Z0-9_]*)|\{([a-zA-Z_][a-zA-Z0-9_]*)\}/g;
-
-function isFullUrl(url) {
-  return /^https?:\/\//i.test(url || '');
-}
-
-function splitUrlToHostPath(fullUrl) {
-  try {
-    const u = new URL(fullUrl);
-    return {
-      host: `${u.protocol}//${u.host}`,
-      path: `${u.pathname}${u.search}${u.hash}` || '/',
-    };
-  } catch {
-    return { host: '', path: fullUrl || '/' };
-  }
-}
-
-function parsePathParams(path) {
-  if (!path) return [];
-  const names = new Set();
-  let match = PARAM_RE.exec(path);
-  while (match) {
-    names.add(match[1] || match[2]);
-    match = PARAM_RE.exec(path);
-  }
-  PARAM_RE.lastIndex = 0;
-  return [...names];
-}
-
-function syncApiPathParams(clientApi) {
-  const names = parsePathParams(clientApi.url);
-  if (!names.length) {
-    clientApi.pathParams = undefined;
-    clientApi.pathParamDescriptions = undefined;
-    return;
-  }
-  const params = { ...(clientApi.pathParams || {}) };
-  const descriptions = { ...(clientApi.pathParamDescriptions || {}) };
-  for (const name of names) {
-    if (!(name in params)) params[name] = '';
-  }
-  for (const key of Object.keys(params)) {
-    if (!names.includes(key)) delete params[key];
-  }
-  for (const key of Object.keys(descriptions)) {
-    if (!names.includes(key)) delete descriptions[key];
-  }
-  clientApi.pathParams = params;
-  clientApi.pathParamDescriptions = Object.keys(descriptions).length ? descriptions : undefined;
-}
+import { mergeEnvironmentLayouts, normalizeEnvironmentLayout } from '../shared/environmentLayout.js';
+import { defaultEnvironments, environmentNameKey, isFullUrl, splitUrlToHostPath, syncApiPathParams } from '../shared/environment.js';
 
 function normalizeParamDescriptions(descs) {
   if (!descs || typeof descs !== 'object') return undefined;
@@ -67,43 +20,97 @@ function normalizeParamDescriptions(descs) {
   return Object.keys(out).length ? out : undefined;
 }
 
-function defaultEnvironments() {
-  return [{ id: 'local', name: 'Local', host: 'http://localhost:8080', grpcTarget: 'http://127.0.0.1:50051' }];
-}
-
-function normalizeEnvironments(project) {
-  let environments = (project.environments || []).map((env) => ({
-    id: env.id || uuidv4(),
-    name: env.name || 'Environment',
-    host: env.host || 'http://localhost:8080',
-    grpcTarget: env.grpcTarget || undefined,
-  }));
-
-  if (!environments.length) {
-    environments = defaultEnvironments();
-    const hosts = new Set();
-    for (const clientApi of getProjectClientApis(project)) {
-      if (isFullUrl(clientApi.url)) hosts.add(splitUrlToHostPath(clientApi.url).host);
-    }
-    if (hosts.size === 1) {
-      environments[0].host = [...hosts][0];
-    }
-  }
-
-  const activeEnvironmentId = environments.some((e) => e.id === project.activeEnvironmentId)
-    ? project.activeEnvironmentId
-    : environments[0].id;
-
-  return { environments, activeEnvironmentId };
-}
-
 function normalizeClientHeaders(headers) {
-  if (!headers || typeof headers !== 'object') return undefined;
-  const out = {};
-  for (const [key, value] of Object.entries(headers)) {
-    if (key.trim()) out[key.trim()] = String(value ?? '');
+  const entries = Object.entries(headers || {}).filter(([key]) => key.trim());
+  return entries.length ? Object.fromEntries(entries.map(([key, value]) => [key.trim(), String(value ?? '')])) : undefined;
+}
+
+function normalizeNodePort(endpoint, serviceKey, transport) {
+  const ip = String(endpoint?.ip || '').trim().replace(/^\[|\]$/g, '');
+  const rawPort = String(endpoint?.port ?? '').trim();
+  if (!ip && !rawPort) return null;
+  const port = Number(rawPort);
+  if (!ip || (isIP(ip) === 0 && !/^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?$/i.test(ip))
+    || !Number.isInteger(port) || port < 1 || port > 65535) {
+    throw new Error(`服务 ${serviceKey} 的 ${transport} NodePort 需要有效的 IP 或主机名，以及 1–65535 的端口`);
   }
-  return Object.keys(out).length ? out : undefined;
+  return { ip, port, protocol: endpoint.protocol === 'https' ? 'https' : 'http' };
+}
+
+function normalizeEnvironment(input) {
+  const name = String(input.name || '').trim();
+  const host = String(input.host || '').trim().replace(/\/$/, '');
+  const grpcTarget = String(input.grpcTarget || '').trim();
+  if (!name) throw new Error('请输入环境名称');
+  if (host) {
+    const url = URL.canParse(host) && new URL(host);
+    if (!url || !['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.search || url.hash) {
+      throw new Error('服务网关地址必须为有效的 http:// 或 https:// 地址');
+    }
+  }
+  const nodePorts = Object.entries(input.nodePorts || {}).flatMap(([key, endpoint]) => {
+    const http = normalizeNodePort(endpoint, key, 'HTTP');
+    const grpc = normalizeNodePort(endpoint?.grpc, key, 'gRPC');
+    if (!http && !grpc) return [];
+    return [[key, grpc ? { ...http, grpc } : http]];
+  });
+  return {
+    id: input.id || uuidv4(), name, host, grpcTarget,
+    headers: normalizeClientHeaders(input.headers),
+    cookies: normalizeClientHeaders(input.cookies),
+    nodePorts: Object.fromEntries(nodePorts),
+  };
+}
+
+function assertUniqueEnvironmentNames(environments) {
+  const names = new Set();
+  for (const { name } of environments) {
+    const key = environmentNameKey(name);
+    if (names.has(key)) {
+      const error = new Error(`环境名称「${name}」已存在`);
+      error.status = 409;
+      throw error;
+    }
+    names.add(key);
+  }
+}
+
+function legacyEnvironments(project) {
+  if (project.environments?.length) return project.environments;
+  if (Object.hasOwn(project, 'activeEnvironmentId') || project.serviceKey) return [];
+  const hosts = new Set(getProjectClientApis(project).filter((api) => isFullUrl(api.url)).map((api) => splitUrlToHostPath(api.url).host));
+  if (hosts.size !== 1) return [];
+  const host = [...hosts][0];
+  if (!URL.canParse(host)) return [];
+  return [{ id: `${project.id || 'legacy'}-environment`, name: new URL(host).hostname, host }];
+}
+
+function bringLegacyEnvironments(project, environments) {
+  const legacy = legacyEnvironments(project);
+  if (!legacy.length) return project;
+  const selected = legacy.find((env) => env.id === project.activeEnvironmentId) || legacy[0];
+  let activeEnvironmentId;
+  for (const source of legacy) {
+    const candidate = normalizeEnvironment({ ...source, name: source.name || 'Environment', host: source.host || 'http://localhost:8080' });
+    const existing = environments.find((env) => env.name === candidate.name && env.host === candidate.host
+      && env.grpcTarget === candidate.grpcTarget
+      && JSON.stringify(env.headers) === JSON.stringify(candidate.headers)
+      && JSON.stringify(env.cookies) === JSON.stringify(candidate.cookies)
+      && JSON.stringify(env.nodePorts) === JSON.stringify(candidate.nodePorts));
+    if (!existing) {
+      const baseId = `${candidate.id}-${project.id || 'legacy'}`;
+      for (let suffix = 1; environments.some((env) => env.id === candidate.id); suffix++) {
+        candidate.id = suffix === 1 ? baseId : `${baseId}-${suffix}`;
+      }
+      environments.push(candidate);
+    }
+    if (selected === source) activeEnvironmentId = existing?.id || candidate.id;
+  }
+  return { ...project, activeEnvironmentId };
+}
+
+function defaultServiceKey(id) {
+  return String(id).toLowerCase().replace(/[^a-z0-9_-]+/g, '-').replace(/^[^a-z0-9]+/, '') || uuidv4();
 }
 
 function normalizeFolders(folders) {
@@ -123,9 +130,6 @@ function normalizeFolders(folders) {
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
 const DATA_DIR = path.join(ROOT, 'data');
-const CONFIG_FILE = path.join(DATA_DIR, 'projects.yaml');
-const BACKUP_FILE = path.join(DATA_DIR, 'projects.yaml.bak');
-const TEMP_CONFIG_FILE = path.join(DATA_DIR, 'projects.yaml.tmp');
 
 const MAX_HISTORY = 500;
 // Keep persisted configs readable; normalized saves emit only the API field names.
@@ -162,11 +166,16 @@ function preserveRenamedFields(project, existing) {
 }
 
 export class Store {
-  constructor() {
+  constructor(dataDir = process.env.MOCKSERVER_DATA_DIR || DATA_DIR) {
+    this.configFile = path.join(dataDir, 'projects.yaml');
+    this.backupFile = path.join(dataDir, 'projects.yaml.bak');
+    this.tempConfigFile = path.join(dataDir, 'projects.yaml.tmp');
     this.projects = [];
+    this.environments = defaultEnvironments().map(normalizeEnvironment);
+    this.environmentLayout = [];
     this.requestHistory = [];
     this.listeners = new Set();
-    fs.mkdirSync(DATA_DIR, { recursive: true });
+    fs.mkdirSync(dataDir, { recursive: true });
     this.load();
   }
 
@@ -182,42 +191,53 @@ export class Store {
   }
 
   load() {
-    if (!fs.existsSync(CONFIG_FILE)) {
+    if (!fs.existsSync(this.configFile)) {
       this.projects = [];
       return;
     }
-    const raw = fs.readFileSync(CONFIG_FILE, 'utf8');
+    const raw = fs.readFileSync(this.configFile, 'utf8');
     const data = yaml.load(raw) || {};
-    this.projects = (data.projects || []).map((p) => this.normalizeProject(p));
+    const { projects, environments, environmentLayout } = this.prepareConfig(data, false);
+    this.projects = projects;
+    this.environments = environments;
+    this.environmentLayout = environmentLayout;
   }
 
   save() {
+    this.environmentLayout = normalizeEnvironmentLayout(this.environmentLayout, this.environments);
     const payload = {
+      environmentLayout: this.environmentLayout,
+      environments: this.environments,
       projects: this.projects,
     };
     const raw = yaml.dump(payload, { lineWidth: 120 });
-    if (fs.existsSync(CONFIG_FILE)) {
-      const currentRaw = fs.readFileSync(CONFIG_FILE, 'utf8');
+    if (fs.existsSync(this.configFile)) {
+      const currentRaw = fs.readFileSync(this.configFile, 'utf8');
       try {
         const current = yaml.load(currentRaw) || {};
         const currentCount = countProjectClientApis(current.projects);
         const nextCount = countProjectClientApis(payload.projects);
-        if (!fs.existsSync(BACKUP_FILE) || currentCount > nextCount) {
-          fs.copyFileSync(CONFIG_FILE, BACKUP_FILE);
+        if (!fs.existsSync(this.backupFile) || currentCount > nextCount) {
+          fs.copyFileSync(this.configFile, this.backupFile);
         }
       } catch {
-        if (!fs.existsSync(BACKUP_FILE)) fs.copyFileSync(CONFIG_FILE, BACKUP_FILE);
+        if (!fs.existsSync(this.backupFile)) fs.copyFileSync(this.configFile, this.backupFile);
       }
     }
-    fs.writeFileSync(TEMP_CONFIG_FILE, raw, 'utf8');
-    fs.renameSync(TEMP_CONFIG_FILE, CONFIG_FILE);
+    fs.writeFileSync(this.tempConfigFile, raw, 'utf8');
+    fs.renameSync(this.tempConfigFile, this.configFile);
   }
 
   normalizeProject(project) {
-    const { environments, activeEnvironmentId } = normalizeEnvironments(project);
+    const id = project.id || uuidv4();
+    const serviceKey = String(project.serviceKey || '').trim() || defaultServiceKey(id);
+    if (!/^[a-z0-9][a-z0-9_-]*$/.test(serviceKey)) {
+      throw new Error('服务 Key 支持小写字母、数字、连字符和下划线，须以字母或数字开头');
+    }
     const grpc = normalizeProjectGrpcProtos(project);
     return {
-      id: project.id || uuidv4(),
+      id,
+      serviceKey,
       name: project.name || 'Untitled Project',
       host: project.host || '0.0.0.0',
       port: Number(project.port) || 3900,
@@ -226,8 +246,8 @@ export class Store {
       grpcPort: Number(project.grpcPort) || 50051,
       grpcEnabled: project.grpcEnabled === true,
       description: project.description || '',
-      environments,
-      activeEnvironmentId,
+      activeEnvironmentId: project.activeEnvironmentId || undefined,
+      nodePortEnabled: project.nodePortEnabled === true,
       clientHeaders: normalizeClientHeaders(project.clientHeaders),
       clientCookies: normalizeClientHeaders(project.clientCookies),
       apiFolders: normalizeFolders(project.apiFolders),
@@ -276,6 +296,8 @@ export class Store {
       proxy: clientApi.proxy === true,
       insecureTls: clientApi.insecureTls === true,
       body: clientApi.body ?? '',
+      bodyType: ['text', 'multipart', 'binary'].includes(clientApi.bodyType) ? clientApi.bodyType : 'text',
+      fileFieldName: clientApi.fileFieldName || 'file',
       bodyPresets: normalizeBodyPresets(clientApi.bodyPresets),
       requestSchemaLanguage: clientApi.requestSchemaLanguage || undefined,
       requestSchemaSource: clientApi.requestSchemaSource || undefined,
@@ -337,7 +359,9 @@ export class Store {
   exportProject(id) {
     const project = this.getProject(id);
     if (!project) return null;
-    return yaml.dump({ projects: [project] }, { lineWidth: 120 });
+    const environments = this.environments.filter((env) => env.id === project.activeEnvironmentId)
+      .map((env) => ({ ...env, nodePorts: Object.fromEntries(Object.entries(env.nodePorts).filter(([key]) => key === project.serviceKey)) }));
+    return yaml.dump({ environments, projects: [project] }, { lineWidth: 120 });
   }
 
   listProjects() {
@@ -350,12 +374,31 @@ export class Store {
 
   upsertProject(project) {
     const existing = this.projects.find((item) => item.id === project.id);
-    const normalized = this.normalizeProject(preserveRenamedFields(project, existing));
+    const environments = [...this.environments];
+    const input = preserveRenamedFields(existing ? {
+      activeEnvironmentId: existing.activeEnvironmentId,
+      serviceKey: existing.serviceKey,
+      nodePortEnabled: existing.nodePortEnabled,
+      ...project,
+    } : project, existing);
+    const normalized = this.normalizeProject(bringLegacyEnvironments(input, environments));
+    assertUniqueEnvironmentNames(environments);
+    if (normalized.activeEnvironmentId && !environments.some((env) => env.id === normalized.activeEnvironmentId)) {
+      throw new Error('所选环境不存在');
+    }
+    if (this.projects.some((item) => item.id !== normalized.id && item.serviceKey === normalized.serviceKey)) {
+      throw new Error('服务 Key 已被其他项目使用');
+    }
     const idx = this.projects.findIndex((p) => p.id === normalized.id);
-    if (idx >= 0) {
-      this.projects[idx] = normalized;
-    } else {
-      this.projects.push(normalized);
+    if (idx < 0) this.projects.push(normalized);
+    else this.projects[idx] = normalized;
+    this.environments = environments;
+    if (existing && existing.serviceKey !== normalized.serviceKey) {
+      this.environments = this.environments.map((env) => {
+        if (!Object.hasOwn(env.nodePorts, existing.serviceKey)) return env;
+        const { [existing.serviceKey]: endpoint, ...others } = env.nodePorts;
+        return { ...env, nodePorts: { ...others, [normalized.serviceKey]: endpoint } };
+      });
     }
     this.save();
     this.notify('projects', this.projects);
@@ -363,7 +406,15 @@ export class Store {
   }
 
   deleteProject(id) {
+    const serviceKey = this.getProject(id)?.serviceKey;
     this.projects = this.projects.filter((p) => p.id !== id);
+    if (serviceKey) {
+      this.environments = this.environments.map((env) => {
+        const nodePorts = { ...env.nodePorts };
+        delete nodePorts[serviceKey];
+        return { ...env, nodePorts };
+      });
+    }
     this.save();
     this.notify('projects', this.projects);
   }
@@ -414,27 +465,100 @@ export class Store {
     this.notify('requests_cleared', { projectId, apiId });
   }
 
+  listEnvironments() {
+    return this.environments.map((env) => ({
+      ...env,
+      nodePorts: Object.fromEntries(this.projects.map(({ serviceKey }) => [
+        serviceKey, Object.hasOwn(env.nodePorts, serviceKey) ? env.nodePorts[serviceKey] : { ip: '', port: '', protocol: 'http' },
+      ])),
+    }));
+  }
+
+  getEnvironmentLayout() {
+    const layout = normalizeEnvironmentLayout(this.environmentLayout, this.environments);
+    const revision = createHash('sha256').update(JSON.stringify(layout)).digest('hex');
+    return { layout, revision };
+  }
+
+  updateEnvironmentLayout(layout, revision) {
+    if (this.getEnvironmentLayout().revision !== revision) {
+      const error = new Error('环境列表已更新，请重试');
+      error.status = 409;
+      throw error;
+    }
+    this.environmentLayout = normalizeEnvironmentLayout(layout, this.environments, { strict: true });
+    this.save();
+    this.notify('environments', null);
+    return this.getEnvironmentLayout();
+  }
+
+  upsertEnvironment(input) {
+    const environment = normalizeEnvironment(input);
+    assertUniqueEnvironmentNames([...this.environments.filter((item) => item.id !== environment.id), environment]);
+    const activeKeys = new Set(this.projects.map((project) => project.serviceKey));
+    environment.nodePorts = Object.fromEntries(Object.entries(environment.nodePorts).filter(([key]) => activeKeys.has(key)));
+    const idx = this.environments.findIndex((entry) => entry.id === environment.id);
+    if (idx < 0) this.environments.push(environment);
+    else this.environments[idx] = environment;
+    this.save();
+    this.notify('environments', null);
+    return environment;
+  }
+
+  deleteEnvironment(id) {
+    if (this.projects.some((project) => project.activeEnvironmentId === id)) {
+      throw new Error('该环境仍被项目使用，请先切换这些项目的环境');
+    }
+    this.environments = this.environments.filter((env) => env.id !== id);
+    this.save();
+    this.notify('environments', null);
+  }
+
   exportConfig() {
-    return yaml.dump({ projects: this.projects }, { lineWidth: 120 });
+    return yaml.dump({ environments: this.environments, environmentLayout: this.getEnvironmentLayout().layout, projects: this.projects }, { lineWidth: 120 });
+  }
+
+  prepareConfig(data, merge) {
+    const projects = new Map((merge ? this.projects : []).map((project) => [project.id, project]));
+    const environments = merge ? [...this.environments] : [];
+    for (const source of data?.environments ?? defaultEnvironments()) {
+      const env = normalizeEnvironment(source);
+      const idx = environments.findIndex((entry) => entry.id === env.id);
+      if (idx < 0) environments.push(env);
+      else if (data?.environments) {
+        environments[idx] = { ...env, nodePorts: { ...environments[idx].nodePorts, ...env.nodePorts } };
+      }
+    }
+    for (const source of data?.projects || []) {
+      const project = this.normalizeProject(bringLegacyEnvironments(source, environments));
+      const existing = [...projects.values()].find((item) => item.id !== project.id && item.serviceKey === project.serviceKey);
+      if (existing) {
+        if (source.serviceKey) throw new Error(`服务 Key 已被使用：${project.serviceKey}`);
+        project.serviceKey = `${project.serviceKey}-${uuidv4().slice(0, 8)}`;
+      }
+      if (project.activeEnvironmentId && !environments.some((env) => env.id === project.activeEnvironmentId)) {
+        throw new Error(`项目 ${project.name} 引用了不存在的环境`);
+      }
+      projects.set(project.id, project);
+    }
+    assertUniqueEnvironmentNames(environments);
+    const incomingLayout = normalizeEnvironmentLayout(data?.environmentLayout || [], environments, { appendMissing: false });
+    const environmentLayout = normalizeEnvironmentLayout(
+      merge ? mergeEnvironmentLayouts(this.environmentLayout, incomingLayout) : incomingLayout,
+      environments,
+    );
+    return { environments, environmentLayout, projects: [...projects.values()] };
   }
 
   importConfig(raw, { merge = false } = {}) {
     const data = typeof raw === 'string' ? yaml.load(raw) : raw;
-    const incoming = (data?.projects || []).map((p) => this.normalizeProject(p));
-    if (merge) {
-      for (const project of incoming) {
-        const idx = this.projects.findIndex((p) => p.id === project.id);
-        if (idx >= 0) {
-          this.projects[idx] = project;
-        } else {
-          this.projects.push(project);
-        }
-      }
-    } else {
-      this.projects = incoming;
-    }
+    const { projects, environments, environmentLayout } = this.prepareConfig(data, merge);
+    this.environments = environments;
+    this.environmentLayout = environmentLayout;
+    this.projects = projects;
     this.save();
     this.notify('projects', this.projects);
+    this.notify('environments', null);
     return this.projects;
   }
 

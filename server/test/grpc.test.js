@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import net from 'node:net';
 import test from 'node:test';
 import { GrpcEngine } from '../grpcEngine.js';
+import { RuntimeEngine } from '../runtimeEngine.js';
 import { inspectGrpcProto, invokeGrpc } from '../grpcRuntime.js';
 
 const proto = `syntax = "proto3";
@@ -131,6 +132,19 @@ test('GrpcEngine and client invoke unary and streaming methods', async (t) => {
   assert.deepEqual(serverStream.response, [{ value: 'one' }, { value: 'two' }]);
   assert.deepEqual(clientStream.response, { value: 'collected' });
   assert.deepEqual(bidi.response, [{ value: 'left' }, { value: 'right' }]);
-  assert.equal(records.length, 4);
+
+  project.serviceKey = 'flow';
+  project.activeEnvironmentId = 'qa';
+  project.nodePortEnabled = true;
+  project.grpcClients = [{ ...mock('client', 'Unary', ''), target: '127.0.0.1:1', request: '{}' }];
+  store.environments = [{
+    id: 'qa', grpcTarget: '127.0.0.1:1',
+    nodePorts: { flow: { ip: '127.0.0.1', port: 1, grpc: { ip: '127.0.0.1', port } } },
+  }];
+  const direct = await new RuntimeEngine(store).sendGrpcClient(project.id, 'client');
+  assert.deepEqual(direct.response, { value: 'unary-response' });
+  assert.ok(records.at(-1).url.startsWith(`http://127.0.0.1:${port}/`));
+
+  assert.equal(records.length, 6);
   assert.ok(records.every((record) => record.protocol === 'grpc' && record.responseStatus === 0));
 });

@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react';
 
-export default function ContextMenu({ x, y, items, onClose }) {
+export default function ContextMenu({ x, y, items, trigger, onClose }) {
   const ref = useRef(null);
 
   useEffect(() => {
@@ -8,7 +8,10 @@ export default function ContextMenu({ x, y, items, onClose }) {
       if (ref.current && !ref.current.contains(e.target)) onClose();
     }
     function handleKey(e) {
-      if (e.key === 'Escape') onClose();
+      if (e.key === 'Escape') {
+        trigger?.focus({ preventScroll: true });
+        onClose();
+      }
     }
     window.addEventListener('mousedown', handleClick);
     window.addEventListener('keydown', handleKey);
@@ -18,7 +21,7 @@ export default function ContextMenu({ x, y, items, onClose }) {
       window.removeEventListener('keydown', handleKey);
       window.removeEventListener('scroll', onClose, true);
     };
-  }, [onClose]);
+  }, [onClose, trigger]);
 
   useEffect(() => {
     const el = ref.current;
@@ -30,7 +33,8 @@ export default function ContextMenu({ x, y, items, onClose }) {
     if (top + rect.height > window.innerHeight) top = window.innerHeight - rect.height - 8;
     el.style.left = `${Math.max(8, left)}px`;
     el.style.top = `${Math.max(8, top)}px`;
-  }, [x, y]);
+    if (trigger) el.querySelector('button:not(:disabled)')?.focus({ preventScroll: true });
+  }, [x, y, trigger]);
 
   if (!items?.length) return null;
 
@@ -62,6 +66,7 @@ export default function ContextMenu({ x, y, items, onClose }) {
             disabled={item.disabled}
             onClick={() => {
               if (!item.disabled) {
+                trigger?.focus({ preventScroll: true });
                 item.onClick();
                 onClose();
               }

@@ -105,20 +105,32 @@ function escapeShellSingleQuoted(value) {
   return String(value).replace(/'/g, "'\\''");
 }
 
-export function buildCurl({ method = 'GET', url, headers = {}, body, allowGetBody = false } = {}) {
+export function buildCurl({ method = 'GET', url, headers = {}, body, allowGetBody = false, bodyType = 'text', fileFieldName = 'file', fileName = 'selected-file' } = {}) {
   const m = (method || 'GET').toUpperCase();
   const target = url || 'http://localhost/';
   const lines = [`curl -X ${m} '${escapeShellSingleQuoted(target)}'`];
 
   for (const [key, value] of Object.entries(headers || {})) {
+    if (bodyType !== 'text' && ['content-type', 'content-length'].includes(key.toLowerCase())) continue;
     if (!key.trim()) continue;
     lines.push(`  -H '${escapeShellSingleQuoted(`${key}: ${value}`)}'`);
   }
 
   if (m !== 'HEAD') {
+    if (bodyType === 'multipart') {
+      try {
+        for (const [key, value] of Object.entries(JSON.parse(body || '{}'))) {
+          lines.push(`  -F '${escapeShellSingleQuoted(`${key}=${typeof value === 'string' ? value : JSON.stringify(value)}`)}'`);
+        }
+      } catch { /* The editor reports invalid JSON on send. */ }
+      lines.push(`  -F '${escapeShellSingleQuoted(`${fileFieldName}=@${fileName}`)}'`);
+    } else if (bodyType === 'binary') {
+      lines.push(`  --data-binary '@${escapeShellSingleQuoted(fileName)}'`);
+    } else {
     const bodyStr = body == null || body === '' ? '' : String(body);
     if (bodyStr && (m !== 'GET' || allowGetBody)) {
       lines.push(`  -d '${escapeShellSingleQuoted(bodyStr)}'`);
+    }
     }
   }
 
@@ -126,16 +138,18 @@ export function buildCurl({ method = 'GET', url, headers = {}, body, allowGetBod
 }
 
 
-export function buildRestClientRequest({ method = 'GET', url, headers = {}, body, allowGetBody = false } = {}) {
+export function buildRestClientRequest({ method = 'GET', url, headers = {}, body, allowGetBody = false, bodyType = 'text', fileFieldName = 'file', fileName = 'selected-file' } = {}) {
   const m = (method || 'GET').toUpperCase();
   const target = url || 'http://localhost/';
   const lines = [`${m} ${target} HTTP/1.1`];
 
   for (const [key, value] of Object.entries(headers || {})) {
+    if (bodyType !== 'text' && ['content-type', 'content-length'].includes(key.toLowerCase())) continue;
     if (!key.trim()) continue;
     lines.push(`${key}: ${value}`);
   }
 
+  if (bodyType !== 'text') return lines.concat('', bodyType === 'multipart' ? `multipart/form-data: ${fileFieldName}=@${fileName}` : `binary file: ${fileName}`).join('\n');
   const bodyStr = body == null || body === '' ? '' : String(body);
   if (m !== 'HEAD' && bodyStr && (m !== 'GET' || allowGetBody)) {
     lines.push('', bodyStr);

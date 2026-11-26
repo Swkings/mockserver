@@ -1,3 +1,4 @@
+import { grpcTargetAuthority } from '../shared/environment.js';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -218,9 +219,7 @@ export function createMetadata(values = {}) {
 export async function invokeGrpc(config, overrides = {}) {
   const resolved = resolveGrpcMethod(config);
   const rawTarget = overrides.target || config.target || 'http://127.0.0.1:50051';
-  const targetText = String(rawTarget);
-  const schemeIndex = targetText.indexOf('://');
-  const target = (schemeIndex >= 0 ? targetText.slice(schemeIndex + 3) : targetText).split('/')[0];
+  const target = grpcTargetAuthority(rawTarget);
   const credentials = (overrides.useTls ?? config.useTls)
     ? grpc.credentials.createSsl()
     : grpc.credentials.createInsecure();

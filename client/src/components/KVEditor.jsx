@@ -1,3 +1,4 @@
+import Icon from './Icon.jsx';
 import { useEffect, useRef, useState } from 'react';
 import KVBulkModal from './KVBulkModal.jsx';
 
@@ -125,33 +126,34 @@ export default function KVEditor({
       </div>
       {list.map((row, idx) => (
         <div className={`kv-row ${row.enabled === false ? 'disabled' : ''}`} key={idx}>
-          <label className="kv-enable" title="是否生效">
+          <label className="kv-enable">
             <input
               type="checkbox"
+              aria-label={row.key ? `启用 ${row.key}` : `启用第 ${idx + 1} 行`}
               checked={row.enabled !== false}
               onChange={(e) => update(idx, 'enabled', e.target.checked)}
             />
           </label>
           <input
             value={row.key}
-            placeholder={keyPlaceholder}
+            aria-label={keyPlaceholder}
             onChange={(e) => update(idx, 'key', e.target.value)}
           />
           <input
             value={row.value}
-            placeholder={valuePlaceholder}
+            aria-label={valuePlaceholder}
             onChange={(e) => update(idx, 'value', e.target.value)}
           />
           {withDescription && (
             <input
               className="desc-input"
               value={row.description}
-              placeholder={row.key}
+              aria-label={descriptionPlaceholder}
               onChange={(e) => update(idx, 'description', e.target.value)}
             />
           )}
-          <button type="button" className="icon-btn" onClick={() => removeRow(idx)} title="Remove">
-            ×
+          <button type="button" className="icon-btn" onClick={() => removeRow(idx)} aria-label={row.key ? `删除 ${row.key}` : `删除第 ${idx + 1} 行`}>
+            <Icon name="close" />
           </button>
         </div>
       ))}

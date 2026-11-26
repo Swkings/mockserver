@@ -20,7 +20,7 @@ export function filterGrpcMethods(methods = [], query = '') {
   const normalized = String(query || '').trim().toLowerCase();
   const sorted = sortGrpcMethods(methods);
   if (!normalized) return sorted;
-  return sorted.filter((method) => [method.name, method.key, method.path]
+  return sorted.filter((method) => [method.name, method.key, method.path, method.detail]
     .some((value) => String(value || '').toLowerCase().includes(normalized)));
 }
 

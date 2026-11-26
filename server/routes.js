@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { resolveClientApiUrl } from './utils/environment.js';
+import { getActiveEnvironment, mergeHttpHeaders, parseCookies, resolveHttpHeaders } from '../shared/environment.js';
 import { Agent, EnvHttpProxyAgent } from 'undici';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -21,44 +22,12 @@ function formatExportTimestamp(date = new Date()) {
   ].join('');
 }
 
-function cookieStringToObject(cookie = '') {
-  const out = {};
-  for (const part of String(cookie || '').split(';')) {
-    const trimmed = part.trim();
-    if (!trimmed) continue;
-    const idx = trimmed.indexOf('=');
-    const key = (idx < 0 ? trimmed : trimmed.slice(0, idx)).trim();
-    if (!key) continue;
-    out[key] = idx < 0 ? '' : trimmed.slice(idx + 1).trim();
-  }
-  return out;
-}
-
-function cookieObjectToString(cookies = {}) {
-  return Object.entries(cookies || {})
-    .filter(([key]) => key.trim())
-    .map(([key, value]) => `${key.trim()}=${value ?? ''}`)
-    .join('; ');
-}
-
-
 function filterDisabledObject(obj = {}, disabledKeys = []) {
   const disabled = new Set(disabledKeys || []);
   const out = {};
   for (const [key, value] of Object.entries(obj || {})) {
     if (!disabled.has(key)) out[key] = value;
   }
-  return out;
-}
-
-function filterDisabledCookieString(cookie = '', disabledKeys = []) {
-  return cookieObjectToString(filterDisabledObject(cookieStringToObject(cookie), disabledKeys));
-}
-
-function headersWithoutCookie(headers = {}) {
-  const out = { ...(headers || {}) };
-  delete out.Cookie;
-  delete out.cookie;
   return out;
 }
 
@@ -103,6 +72,22 @@ export function createRoutes(store, engine) {
   const router = express.Router();
 
   router.get('/health', (_req, res) => {
+    res.json({ ok: true });
+  });
+
+  router.get('/environment-layout', (_req, res) => res.json(store.getEnvironmentLayout()));
+  router.put('/environment-layout', (req, res) => {
+    res.json(store.updateEnvironmentLayout(req.body.layout, req.body.revision));
+  });
+  router.get('/environments', (_req, res) => res.json(store.listEnvironments()));
+  router.post('/environments', (req, res) => {
+    res.json(store.upsertEnvironment({ ...req.body, id: undefined }));
+  });
+  router.put('/environments/:id', (req, res) => {
+    res.json(store.upsertEnvironment({ ...req.body, id: req.params.id }));
+  });
+  router.delete('/environments/:id', (req, res) => {
+    store.deleteEnvironment(req.params.id);
     res.json({ ok: true });
   });
 
@@ -261,36 +246,102 @@ export function createRoutes(store, engine) {
       return;
     }
 
+    const environmentId = req.body.activeEnvironmentId ?? project.activeEnvironmentId;
+    const environment = environmentId ? getActiveEnvironment(store.environments, environmentId) : null;
+    const connection = {
+      ...project,
+      environments: environment ? [environment] : [],
+      activeEnvironmentId: environmentId,
+      nodePortEnabled: req.body.nodePortEnabled ?? project.nodePortEnabled,
+      clientHeaders: req.body.serviceHeaders ?? project.clientHeaders,
+      clientCookies: req.body.serviceCookies ?? project.clientCookies,
+    };
     const effectiveClientApi = {
       ...clientApi,
-      queryParams: filterDisabledObject(clientApi.queryParams, clientApi.disabledQueryParams),
+      url: req.body.path ?? clientApi.url,
+      pathParams: req.body.path == null ? clientApi.pathParams : req.body.pathParams,
+      queryParams: req.body.path == null
+        ? filterDisabledObject(clientApi.queryParams, clientApi.disabledQueryParams)
+        : req.body.queryParams,
     };
-    const url = req.body.url || resolveClientApiUrl(project, effectiveClientApi);
+    const url = connection.nodePortEnabled
+      ? resolveClientApiUrl(connection, effectiveClientApi, req.body.path == null ? req.body.url : undefined)
+      : req.body.url || resolveClientApiUrl(connection, effectiveClientApi);
+    if (environmentId && !environment) {
+      res.status(400).json({ error: '所选环境不存在' });
+      return;
+    }
+    if (!url) {
+      const error = connection.nodePortEnabled ? '请为该服务配置 NodePort 地址' : '请为该环境配置服务网关地址';
+      res.status(400).json({ error });
+      return;
+    }
     const method = (req.body.method || clientApi.method || 'POST').toUpperCase();
-    const useProjectHeaders = req.body.useProjectHeaders ?? clientApi.useProjectHeaders !== false;
-    const useProjectCookies = req.body.useProjectCookies ?? clientApi.useProjectCookies !== false;
-    const apiHeaders = filterDisabledObject(headersWithoutCookie(clientApi.headers || {}), clientApi.disabledHeaders);
-    const requestHeaders = headersWithoutCookie(req.body.headers || {});
-    const sourceCookieHeader = req.body.headers?.Cookie ?? req.body.headers?.cookie ?? clientApi.headers?.Cookie ?? clientApi.headers?.cookie ?? '';
-    const cookieHeader = req.body.headers ? sourceCookieHeader : filterDisabledCookieString(sourceCookieHeader, clientApi.disabledCookies);
-    const cookies = {
-      ...(useProjectCookies ? (project.clientCookies || {}) : {}),
-      ...cookieStringToObject(cookieHeader),
-    };
-    const cookieString = cookieObjectToString(cookies);
-    const headers = {
-      ...(useProjectHeaders ? (project.clientHeaders || {}) : {}),
-      ...apiHeaders,
-      ...requestHeaders,
-      ...(cookieString ? { Cookie: cookieString } : {}),
-    };
+    let apiHeaders = req.body.apiHeaders;
+    if (!apiHeaders) {
+      const savedHeaders = filterDisabledObject(clientApi.headers, clientApi.disabledHeaders);
+      const savedCookie = mergeHttpHeaders(savedHeaders);
+      const cookieKey = Object.keys(savedCookie).find((key) => key.toLowerCase() === 'cookie');
+      if (cookieKey) {
+        const cookies = filterDisabledObject(parseCookies(savedCookie[cookieKey]), clientApi.disabledCookies);
+        savedCookie[cookieKey] = Object.entries(cookies).map(([name, value]) => `${name}=${value}`).join('; ');
+      }
+      apiHeaders = mergeHttpHeaders(savedCookie, req.body.headers);
+    }
+    const headers = resolveHttpHeaders({
+      environment,
+      project: connection,
+      apiHeaders,
+      inheritHeaders: req.body.useProjectHeaders ?? clientApi.useProjectHeaders !== false,
+      inheritCookies: req.body.useProjectCookies ?? clientApi.useProjectCookies !== false,
+    });
     const allowGetBody = req.body.allowGetBody ?? clientApi.allowGetBody === true;
     const body = req.body.body ?? clientApi.body ?? '';
-    const hasBody = body != null && String(body) !== '';
+    const bodyType = req.body.bodyType || clientApi.bodyType || 'text';
+    const file = req.body.file;
+    if (bodyType !== 'text' && (!file || !file.base64)) {
+      res.status(400).json({ error: '请选择上传文件' });
+      return;
+    }
+    if (file?.base64?.length > 35_000_000) {
+      res.status(413).json({ error: '文件不能超过 25 MB' });
+      return;
+    }
+    const hasBody = bodyType === 'text' ? body != null && String(body) !== '' : true;
     const shouldSendBody = method === 'GET' ? allowGetBody && hasBody : hasBody;
-    const actualBody = shouldSendBody ? body : '';
+    let actualBody = shouldSendBody ? body : '';
+    if (shouldSendBody && bodyType !== 'text') {
+      const bytes = Buffer.from(file.base64, 'base64');
+      if (bytes.length > 25 * 1024 * 1024) {
+        res.status(413).json({ error: '文件不能超过 25 MB' });
+        return;
+      }
+      for (const key of Object.keys(headers)) {
+        if (key.toLowerCase() === 'content-type' || key.toLowerCase() === 'content-length') delete headers[key];
+      }
+      if (bodyType === 'multipart') {
+        const form = new FormData();
+        if (String(body).trim()) {
+          let fields;
+          try { fields = JSON.parse(body); } catch {
+            res.status(400).json({ error: 'multipart 附加字段必须是 JSON 对象' });
+            return;
+          }
+          if (!fields || typeof fields !== 'object' || Array.isArray(fields)) {
+            res.status(400).json({ error: 'multipart 附加字段必须是 JSON 对象' });
+            return;
+          }
+          for (const [key, value] of Object.entries(fields)) form.append(key, typeof value === 'string' ? value : JSON.stringify(value));
+        }
+        form.append(req.body.fileFieldName || clientApi.fileFieldName || 'file', new Blob([bytes], { type: file.type || 'application/octet-stream' }), file.name || 'upload');
+        actualBody = form;
+      } else {
+        actualBody = bytes;
+        headers['Content-Type'] = file.type || 'application/octet-stream';
+      }
+    }
 
-    const useProxy = req.body.proxy === undefined ? clientApi.proxy === true : req.body.proxy === true;
+    const useProxy = !connection.nodePortEnabled && (req.body.proxy ?? clientApi.proxy) === true;
     const insecureTls = req.body.insecureTls === undefined ? clientApi.insecureTls === true : req.body.insecureTls === true;
 
     const started = Date.now();
@@ -299,9 +350,13 @@ export function createRoutes(store, engine) {
         method,
         headers,
         dispatcher: getHttpDispatcher(useProxy, insecureTls),
-        body: method === 'HEAD' ? undefined : (shouldSendBody ? body : undefined),
+        body: method === 'HEAD' ? undefined : (shouldSendBody ? actualBody : undefined),
       });
-      const text = await response.text();
+      const responseBytes = Buffer.from(await response.arrayBuffer());
+      const responseHeaders = Object.fromEntries(response.headers.entries());
+      const contentType = response.headers.get('content-type') || '';
+      const isDownload = Boolean(response.headers.get('content-disposition')) || (!/^(text\/|application\/(json|xml|javascript|.*\+json))/.test(contentType) && responseBytes.length > 0);
+      const text = isDownload ? '' : responseBytes.toString('utf8');
       const record = {
         id: `${Date.now()}-client-${Math.random().toString(36).slice(2, 8)}`,
         projectId: project.id,
@@ -313,10 +368,10 @@ export function createRoutes(store, engine) {
         path: url,
         url,
         headers,
-        body: typeof actualBody === 'string' ? actualBody : JSON.stringify(actualBody),
+        body: bodyType === 'text' ? String(actualBody) : `[file: ${file.name || 'upload'}, ${Buffer.from(file.base64, 'base64').length} bytes]`,
         responseStatus: response.status,
-        responseHeaders: Object.fromEntries(response.headers.entries()),
-        responseBody: text,
+        responseHeaders,
+        responseBody: isDownload ? `[file: ${responseBytes.length} bytes]` : text,
         durationMs: Date.now() - started,
         matchedApiId: clientApi.id,
         matchedApiName: clientApi.name,
@@ -326,6 +381,7 @@ export function createRoutes(store, engine) {
         ok: response.ok,
         status: response.status,
         body: text,
+        download: isDownload ? { base64: responseBytes.toString('base64'), contentType, contentDisposition: response.headers.get('content-disposition') || '' } : null,
         durationMs: record.durationMs,
       });
     } catch (err) {
@@ -333,6 +389,11 @@ export function createRoutes(store, engine) {
       const errorMessage = errorCode ? err.message + " (" + errorCode + ")" : err.message;
       res.status(502).json({ error: errorMessage });
     }
+  });
+
+  router.use((error, _req, res, next) => {
+    if (res.headersSent) return next(error);
+    res.status(error.status || 400).json({ error: error.message });
   });
 
   return router;

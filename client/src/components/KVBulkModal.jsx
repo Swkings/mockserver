@@ -1,3 +1,4 @@
+import Icon from './Icon.jsx';
 import { useEffect, useRef, useState } from 'react';
 import { parseBulkText, rowsToBulkText } from '../utils/kvBulk.js';
 
@@ -37,7 +38,7 @@ export default function KVBulkModal({ open, rows, onConfirm, onClose }) {
       <div className="modal bulk-modal" onClick={(e) => e.stopPropagation()}>
         <div className="modal-head">
           <h3>批量编辑</h3>
-          <button type="button" className="icon-btn" onClick={onClose}>×</button>
+          <button type="button" className="icon-btn" aria-label="关闭批量编辑" onClick={onClose}><Icon name="close" /></button>
         </div>
 
         <div className="bulk-toolbar">
@@ -64,13 +65,11 @@ export default function KVBulkModal({ open, rows, onConfirm, onClose }) {
               等号模式
             </button>
           </div>
-          <span className="bulk-hint">
-            格式：参数名{separator}参数值
-          </span>
         </div>
 
         <textarea
           className="bulk-textarea"
+          aria-label="键值文本"
           value={text}
           spellCheck={false}
           onChange={(e) => setText(e.target.value)}
@@ -78,7 +77,7 @@ export default function KVBulkModal({ open, rows, onConfirm, onClose }) {
         />
 
         <p className="bulk-footer">
-          字段之间以{separatorLabel}分隔，多条记录以换行或英文分号(;)分隔
+          使用{separatorLabel}分隔键值，换行或分号分隔记录
         </p>
 
         <div className="modal-actions">

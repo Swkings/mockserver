@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
 
-export default function Dropdown({ trigger, items, align = 'right' }) {
+export default function Dropdown({ trigger, label, title, items, align = 'right', disabled = false }) {
   const [open, setOpen] = useState(false);
   const ref = useRef(null);
+  const triggerRef = useRef(null);
 
   useEffect(() => {
     if (!open) return undefined;
@@ -10,7 +11,10 @@ export default function Dropdown({ trigger, items, align = 'right' }) {
       if (ref.current && !ref.current.contains(e.target)) setOpen(false);
     }
     function handleKey(e) {
-      if (e.key === 'Escape') setOpen(false);
+      if (e.key === 'Escape' && ref.current?.contains(e.target)) {
+        setOpen(false);
+        triggerRef.current?.focus();
+      }
     }
     window.addEventListener('mousedown', handleClick);
     window.addEventListener('keydown', handleKey);
@@ -22,7 +26,7 @@ export default function Dropdown({ trigger, items, align = 'right' }) {
 
   return (
     <div className={`dropdown ${align}`} ref={ref}>
-      <button type="button" className="dropdown-trigger" onClick={() => setOpen((v) => !v)}>
+      <button type="button" className="dropdown-trigger" ref={triggerRef} aria-label={label} title={title} aria-expanded={open} disabled={disabled} onClick={() => setOpen((v) => !v)}>
         {trigger}
       </button>
       {open && (
@@ -49,6 +53,7 @@ export default function Dropdown({ trigger, items, align = 'right' }) {
                 className={`dropdown-item ${item.danger ? 'danger' : ''}`}
                 onClick={() => {
                   setOpen(false);
+                  triggerRef.current?.focus();
                   item.onClick?.();
                 }}
               >

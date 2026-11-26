@@ -1,3 +1,4 @@
+import Icon from './Icon.jsx';
 import { useEffect, useRef, useState } from 'react';
 import { bodyPresetPreview, removeBodyPreset, upsertBodyPreset } from '../utils/bodyPresets.js';
 
@@ -54,7 +55,7 @@ export default function BodyPresetToolbar({ presets = [], body, onBodyChange, on
 
   return (
     <div className="body-preset-toolbar">
-      <div className="body-preset-picker" ref={pickerRef}>
+      {presets.length > 0 && <div className="body-preset-picker" ref={pickerRef}>
         <button
           type="button"
           className="body-preset-trigger"
@@ -65,7 +66,7 @@ export default function BodyPresetToolbar({ presets = [], body, onBodyChange, on
           <span>
             {selectedPreset
               ? (selectedPreset.name || 'Body ' + (selectedIndex + 1)) + ' · ' + bodyPresetPreview(selectedPreset.body)
-              : (presets.length ? '新建或选择 Body' : '暂无已保存 Body')}
+              : '选择 Body'}
           </span>
           <span className="body-preset-caret" aria-hidden="true">▾</span>
         </button>
@@ -101,13 +102,13 @@ export default function BodyPresetToolbar({ presets = [], body, onBodyChange, on
                   title="删除此 Body"
                   onClick={(event) => deletePreset(event, preset.id)}
                 >
-                  ×
+                  <Icon name="close" />
                 </button>
               </div>
             ))}
           </div>
         )}
-      </div>
+      </div>}
       <button type="button" className="ghost sm" onClick={savePreset}>保存 Body</button>
     </div>
   );

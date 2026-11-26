@@ -1,3 +1,5 @@
+import Icon from './Icon.jsx';
+import Dropdown from './Dropdown.jsx';
 import { useMemo, useState } from 'react';
 import KVEditor from './KVEditor.jsx';
 import SplitPane from './SplitPane.jsx';
@@ -15,7 +17,7 @@ export default function ApiEditor({
   api,
   apiIndex,
   onChange,
-  onRemove,
+  actions,
   onSave,
   busy,
 }) {
@@ -166,6 +168,7 @@ export default function ApiEditor({
         {bodyTab === 'body' ? (
           <textarea
             className="code-input fill"
+            aria-label="响应 Body"
             value={api.response?.body ?? ''}
             spellCheck={false}
             onChange={(e) => patch((a) => { a.response = { ...a.response, body: e.target.value }; })}
@@ -179,28 +182,10 @@ export default function ApiEditor({
 
   return (
     <div className="editor-page">
-      <div className="editor-head">
-        <div className="editor-title">
-          <label className="toggle-switch" title="启用">
-            <input
-              type="checkbox"
-              checked={api.enabled !== false}
-              onChange={(e) => patch((a) => { a.enabled = e.target.checked; })}
-            />
-            <span className="toggle-track" />
-          </label>
-          <input
-            className="title-input"
-            value={api.name}
-            placeholder="API 名称"
-            onChange={(e) => patch((a) => { a.name = e.target.value; })}
-          />
-        </div>
-      </div>
-
       <div className="url-bar">
         <select
           className="method-select"
+          aria-label="请求方法"
           value={(api.match?.method || 'GET').toUpperCase()}
           onChange={(e) => patch((a) => { a.match = { ...a.match, method: e.target.value }; })}
         >
@@ -208,20 +193,21 @@ export default function ApiEditor({
         </select>
         <input
           className="url-input"
+          aria-label="匹配路径"
           value={api.match?.path || '/'}
           placeholder="/api/path"
           onChange={(e) => patch((a) => { a.match = { ...a.match, path: e.target.value }; })}
         />
         <div className="url-actions">
           <button type="button" className="primary" onClick={onSave} disabled={busy}>保存</button>
-          <button type="button" className="ghost danger" onClick={onRemove}>删除</button>
+          <Dropdown trigger={<Icon name="more" />} label="接口操作" items={actions} disabled={busy} />
         </div>
       </div>
 
       <SplitPane
         className="editor-split"
         rightTitle="Mock 响应"
-        initialRightWidth={440}
+        rightFraction={0.46}
         minLeft={360}
         minRight={320}
         left={leftPanel}

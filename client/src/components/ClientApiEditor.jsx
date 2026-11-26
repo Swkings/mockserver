@@ -1,7 +1,10 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import Icon from './Icon.jsx';
+import Dropdown from './Dropdown.jsx';
+import { useEffect, useMemo, useState } from 'react';
 import KVEditor from './KVEditor.jsx';
 import SplitPane from './SplitPane.jsx';
-import EnvironmentManager from './EnvironmentManager.jsx';
+import RequestAddress from './RequestAddress.jsx';
+import ServiceConnection from './ServiceConnection.jsx';
 import BodyPresetToolbar from './BodyPresetToolbar.jsx';
 import SchemaFieldRows from './SchemaFieldRows.jsx';
 import { api } from '../api.js';
@@ -9,10 +12,8 @@ import { parseHttpRequestSchema, schemaExample } from '../utils/httpRequestSchem
 import {
   HTTP_METHODS,
   objToKv,
-  kvToObj,
   paramsToKv,
   kvToParams,
-  mergeClientHeaders,
   buildCurl,
   buildRestClientRequest,
   prettyJson,
@@ -20,7 +21,9 @@ import {
   formatDuration,
 } from '../utils/format.js';
 import {
+  getActiveEnvironment,
   parsePathParams,
+  resolveHttpHeaders,
   resolveClientApiUrl,
   syncApiPathParams,
 } from '../utils/environment.js';
@@ -40,33 +43,12 @@ function cookieStringToRows(cookie = '') {
 
 function cookieRowsToString(rows = []) {
   return rows
+    .filter((row) => row.enabled !== false)
     .map((row) => ({ key: row.key?.trim(), value: row.value ?? '' }))
     .filter((row) => row.key)
     .map((row) => `${row.key}=${row.value}`)
     .join('; ');
 }
-
-function cookieRowsToObj(rows = []) {
-  const out = {};
-  for (const row of rows || []) {
-    const key = row.key?.trim();
-    if (key) out[key] = row.value ?? '';
-  }
-  return out;
-}
-
-function objToCookieRows(obj = {}) {
-  return objToKv(obj).map((row) => ({ key: row.key, value: row.value }));
-}
-
-function mergeCookieValues(projectCookies = {}, actionCookie = '', useProjectCookies = true) {
-  const merged = {
-    ...(useProjectCookies ? projectCookies : {}),
-    ...cookieRowsToObj(cookieStringToRows(actionCookie)),
-  };
-  return cookieRowsToString(objToCookieRows(merged));
-}
-
 
 function rowsToObjectAll(rows = []) {
   const out = {};
@@ -110,25 +92,54 @@ function filterDisabledObject(obj = {}, disabledKeys = []) {
   return out;
 }
 
-function headersWithoutCookie(headers = {}) {
-  const next = { ...(headers || {}) };
-  delete next.Cookie;
-  delete next.cookie;
-  return next;
+function cookieHeader(headers) {
+  return Object.entries(headers || {}).find(([name]) => name.toLowerCase() === 'cookie')?.[1] || '';
+}
+
+function headersWithoutCookie(headers) {
+  return Object.fromEntries(Object.entries(headers || {}).filter(([key]) => key.toLowerCase() !== 'cookie'));
+}
+
+async function encodeFile(file) {
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  let binary = '';
+  for (let offset = 0; offset < bytes.length; offset += 8192) {
+    binary += String.fromCharCode(...bytes.subarray(offset, offset + 8192));
+  }
+  return { name: file.name, type: file.type, base64: btoa(binary) };
+}
+
+function downloadResponse(result) {
+  const { base64, contentType, contentDisposition } = result.download;
+  const match = contentDisposition.match(/filename\*=UTF-8''([^;]+)|filename="?([^";]+)"?/i);
+  let name = match?.[1] ? decodeURIComponent(match[1]) : match?.[2];
+  name = (name || 'download').split(/[\\/]/).pop() || 'download';
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
+  const url = URL.createObjectURL(new Blob([bytes], { type: contentType || 'application/octet-stream' }));
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = name;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+function requestOrigin(url) {
+  return URL.canParse(url) ? new URL(url).origin : '';
 }
 
 export default function ClientApiEditor({
   projectId,
-  projectResetKey,
-  projectHeaders,
-  projectCookies,
+  project,
   environments,
-  activeEnvironmentId,
   onProjectPatch,
   clientApi,
   clientApiIndex,
   onChange,
-  onRemove,
+  actions,
   onSave,
   busy,
   onSent,
@@ -139,10 +150,11 @@ export default function ClientApiEditor({
   const [sending, setSending] = useState(false);
   const [sendResult, setSendResult] = useState(null);
   const [sendError, setSendError] = useState('');
-  const [showEnvEditor, setShowEnvEditor] = useState(false);
-  const [envMenuOpen, setEnvMenuOpen] = useState(false);
+  const [uploadFile, setUploadFile] = useState(null);
   const [rightTab, setRightTab] = useState('response');
-  const envPickerRef = useRef(null);
+  const bodyType = clientApi.bodyType || 'text';
+
+  useEffect(() => { setUploadFile(null); setSendResult(null); }, [clientApi.id]);
   const requestSchema = useMemo(
     () => parseHttpRequestSchema(
       clientApi.requestSchemaSource,
@@ -163,9 +175,12 @@ export default function ClientApiEditor({
     () => withDisabledRows(paramsToKv(clientApi.queryParams, clientApi.queryParamDescriptions), clientApi.disabledQueryParams),
     [clientApi.queryParams, clientApi.queryParamDescriptions, clientApi.disabledQueryParams]
   );
-  const projectHeaderRows = useMemo(() => objToKv(projectHeaders), [projectHeaders]);
-  const projectCookieRows = useMemo(() => objToCookieRows(projectCookies), [projectCookies]);
-  const cookieValue = clientApi.headers?.Cookie ?? clientApi.headers?.cookie ?? '';
+  const { activeEnvironmentId, nodePortEnabled } = project;
+  const activeEnv = activeEnvironmentId ? getActiveEnvironment(environments, activeEnvironmentId) : null;
+  const inherited = resolveHttpHeaders({ environment: activeEnv, project, inheritHeaders: useProjectHeaders, inheritCookies: useProjectCookies });
+  const projectHeaderRows = objToKv(headersWithoutCookie(inherited));
+  const projectCookieRows = cookieStringToRows(cookieHeader(inherited));
+  const cookieValue = cookieHeader(clientApi.headers);
   const cookieRows = useMemo(
     () => withDisabledRows(cookieStringToRows(cookieValue), clientApi.disabledCookies),
     [cookieValue, clientApi.disabledCookies]
@@ -186,23 +201,21 @@ export default function ClientApiEditor({
     () => ({ ...clientApi, queryParams: effectiveQueryParams }),
     [clientApi, effectiveQueryParams]
   );
-  const mergedCookieValue = useMemo(
-    () => mergeCookieValues(projectCookies, effectiveClientApiCookies, useProjectCookies),
-    [projectCookies, effectiveClientApiCookies, useProjectCookies]
-  );
-  const mergedHeaders = useMemo(
-    () => mergeClientHeaders(
-      useProjectHeaders ? projectHeaders : undefined,
-      effectiveClientApiHeaders,
-      mergedCookieValue ? { Cookie: mergedCookieValue } : undefined
-    ) || {},
-    [useProjectHeaders, projectHeaders, effectiveClientApiHeaders, mergedCookieValue]
-  );
+  const outboundApiHeaders = {
+    ...effectiveClientApiHeaders,
+    ...(effectiveClientApiCookies ? { Cookie: effectiveClientApiCookies } : {}),
+  };
+  const mergedHeaders = resolveHttpHeaders({
+    environment: activeEnv,
+    project,
+    apiHeaders: outboundApiHeaders,
+    inheritHeaders: useProjectHeaders,
+    inheritCookies: useProjectCookies,
+  });
   const pathParamNames = useMemo(() => parsePathParams(clientApi.url), [clientApi.url]);
-  const resolvedUrl = useMemo(
-    () => resolveClientApiUrl({ environments, activeEnvironmentId, clientApi: effectiveClientApi }),
-    [environments, activeEnvironmentId, effectiveClientApi]
-  );
+  const resolvedUrl = activeEnvironmentId && !activeEnv
+    ? ''
+    : resolveClientApiUrl({ ...project, environments, clientApi: effectiveClientApi });
   const curlCommand = useMemo(
     () => buildCurl({
       method: clientApi.method,
@@ -210,8 +223,11 @@ export default function ClientApiEditor({
       headers: mergedHeaders,
       body: clientApi.body,
       allowGetBody: clientApi.allowGetBody === true,
+      bodyType,
+      fileFieldName: clientApi.fileFieldName || 'file',
+      fileName: uploadFile?.name || 'selected-file',
     }),
-    [clientApi.method, resolvedUrl, mergedHeaders, clientApi.body, clientApi.allowGetBody]
+    [clientApi.method, resolvedUrl, mergedHeaders, clientApi.body, clientApi.allowGetBody, bodyType, clientApi.fileFieldName, uploadFile]
   );
   const restClientRequest = useMemo(
     () => buildRestClientRequest({
@@ -220,37 +236,16 @@ export default function ClientApiEditor({
       headers: mergedHeaders,
       body: clientApi.body,
       allowGetBody: clientApi.allowGetBody === true,
+      bodyType,
+      fileFieldName: clientApi.fileFieldName || 'file',
+      fileName: uploadFile?.name || 'selected-file',
     }),
-    [clientApi.method, resolvedUrl, mergedHeaders, clientApi.body, clientApi.allowGetBody]
+    [clientApi.method, resolvedUrl, mergedHeaders, clientApi.body, clientApi.allowGetBody, bodyType, clientApi.fileFieldName, uploadFile]
   );
-  const requestText = requestFormat === 'curl' ? curlCommand : restClientRequest;
+  const requestText = !resolvedUrl ? '请先配置当前服务的连接地址' : requestFormat === 'curl' ? curlCommand : restClientRequest;
   const paramsCount = Object.keys(effectiveQueryParams || {}).filter(Boolean).length;
   const headersCount = Object.keys(headersWithoutCookie(mergedHeaders)).filter(Boolean).length;
-  const cookiesCount = cookieStringToRows(mergedCookieValue).filter((row) => row.key?.trim()).length;
-  const activeEnv = useMemo(
-    () => environments?.find((e) => e.id === activeEnvironmentId) || environments?.[0],
-    [environments, activeEnvironmentId]
-  );
-  const activeEnvName = activeEnv?.name || '默认';
-  const activeEnvHost = activeEnv?.host || '';
-
-  useEffect(() => {
-    if (!envMenuOpen) return undefined;
-    function handlePointerDown(e) {
-      if (envPickerRef.current && !envPickerRef.current.contains(e.target)) {
-        setEnvMenuOpen(false);
-      }
-    }
-    function handleKeyDown(e) {
-      if (e.key === 'Escape') setEnvMenuOpen(false);
-    }
-    window.addEventListener('mousedown', handlePointerDown);
-    window.addEventListener('keydown', handleKeyDown);
-    return () => {
-      window.removeEventListener('mousedown', handlePointerDown);
-      window.removeEventListener('keydown', handleKeyDown);
-    };
-  }, [envMenuOpen]);
+  const cookiesCount = cookieStringToRows(cookieHeader(mergedHeaders)).filter((row) => row.key?.trim()).length;
 
   function patch(updater) {
     onChange((prev) => {
@@ -287,20 +282,12 @@ export default function ClientApiEditor({
 
   function updateActionHeaders(rows) {
     patch((a) => {
-      const cookie = a.headers?.Cookie ?? a.headers?.cookie;
+      const cookie = cookieHeader(a.headers);
       const headers = rowsToObjectAll(rows);
       if (cookie) headers.Cookie = cookie;
       a.headers = headers;
       const disabled = disabledKeysFromRows(rows);
       a.disabledHeaders = disabled.length ? disabled : undefined;
-    });
-  }
-
-  function updateCookie(value) {
-    patch((a) => {
-      const headers = headersWithoutCookie(a.headers);
-      if (value.trim()) headers.Cookie = value;
-      a.headers = headers;
     });
   }
 
@@ -337,15 +324,35 @@ export default function ClientApiEditor({
   }
 
   async function handleSend() {
+    if (bodyType !== 'text' && !uploadFile) {
+      setTab('body');
+      setSendError('请选择上传文件');
+      setRightTab('response');
+      return;
+    }
+    if (uploadFile && uploadFile.size > 25 * 1024 * 1024) {
+      setSendError('文件不能超过 25 MB');
+      setRightTab('response');
+      return;
+    }
     setSending(true);
     setSendError('');
     setSendResult(null);
     try {
       const result = await api.sendClientApi(projectId, clientApi.id, {
-        url: resolvedUrl,
+        path: clientApi.url,
+        pathParams: clientApi.pathParams,
+        queryParams: effectiveQueryParams,
         method: clientApi.method,
-        headers: mergedHeaders,
+        apiHeaders: outboundApiHeaders,
+        serviceHeaders: project.clientHeaders || {},
+        serviceCookies: project.clientCookies || {},
+        activeEnvironmentId: activeEnvironmentId || '',
+        nodePortEnabled,
         body: clientApi.body,
+        bodyType,
+        fileFieldName: clientApi.fileFieldName || 'file',
+        file: bodyType === 'text' ? undefined : await encodeFile(uploadFile),
         allowGetBody: clientApi.allowGetBody === true,
         useProjectHeaders,
         useProjectCookies,
@@ -366,13 +373,14 @@ export default function ClientApiEditor({
     <>
       <div className="tabs">
         {[
-          { id: 'params', label: 'Params', count: paramsCount },
+          { id: 'params', label: 'Params', count: paramsCount + pathParamNames.length },
           { id: 'headers', label: 'Headers', count: headersCount },
           { id: 'cookies', label: 'Cookies', count: cookiesCount },
           { id: 'body', label: 'Body', count: 0 },
-          { id: 'setting', label: 'Setting', count: 0 },
+          { id: 'schema', label: '结构', count: 0 },
+          { id: 'setting', label: '设置', count: 0 },
         ].map((t) => (
-          <button key={t.id} type="button" className={`tab ${tab === t.id ? 'active' : ''}`} onClick={() => setTab(t.id)}>
+          <button key={t.id} type="button" aria-pressed={tab === t.id} className={`tab ${tab === t.id ? 'active' : ''}`} onClick={() => setTab(t.id)}>
             <span>{t.label}</span>
             {t.count > 0 && <span className="tab-count">{t.count}</span>}
           </button>
@@ -381,9 +389,36 @@ export default function ClientApiEditor({
 
       {tab === 'params' && (
         <div className="panel">
+          {pathParamNames.length > 0 && (
+            <div className="path-params">
+              <h4>路径参数</h4>
+              <div className="param-fields">
+                <div className="param-fields-head">
+                  <span>参数名</span>
+                  <span>参数值</span>
+                  <span>说明</span>
+                </div>
+                {pathParamNames.map((name) => (
+                  <div className="param-fields-row" key={name}>
+                    <span className="param-name">{name}</span>
+                    <input
+                      value={clientApi.pathParams?.[name] ?? ''}
+                      aria-label={`${name} 参数值`}
+                      onChange={(e) => updatePathParam(name, e.target.value)}
+                    />
+                    <input
+                      className="desc-input"
+                      value={clientApi.pathParamDescriptions?.[name] ?? ''}
+                      aria-label={`${name} 参数说明`}
+                      onChange={(e) => updatePathParamDescription(name, e.target.value)}
+                    />
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
           <section>
-            <h4>Query Params</h4>
-            <p className="hint section-hint">追加到 URL 的查询参数（?key=value）</p>
+            {pathParamNames.length > 0 && <h4>查询参数</h4>}
             <KVEditor
               resetKey={`${clientApi.id}-params`}
               rows={queryParamRows}
@@ -412,12 +447,11 @@ export default function ClientApiEditor({
               checked={useProjectHeaders}
               onChange={(e) => patch((a) => { a.useProjectHeaders = e.target.checked; })}
             />
-            <span>启用项目 Headers</span>
+            <span>继承环境与服务 Headers</span>
           </label>
           {useProjectHeaders && projectHeaderRows.some((r) => r.key.trim()) && (
             <section className="inherited-headers">
-              <h4>项目 Headers</h4>
-              <p className="hint section-hint">继承自项目设置，所有 Client API 自动携带</p>
+              <h4>继承的 Headers</h4>
               <div className="kv-readonly">
                 <div className="kv-head">
                   <span>Key</span>
@@ -433,8 +467,7 @@ export default function ClientApiEditor({
             </section>
           )}
           <section>
-            <h4>API Headers</h4>
-            <p className="hint section-hint">仅本 API 生效，同名 Header 覆盖项目配置</p>
+            {projectHeaderRows.some((row) => row.key.trim()) && <h4>API Headers</h4>}
             <KVEditor
               resetKey={clientApi.id}
               rows={headerRows}
@@ -442,11 +475,6 @@ export default function ClientApiEditor({
               onChange={updateActionHeaders}
             />
           </section>
-          {Object.keys(mergedHeaders).length > 0 && (
-            <p className="hint merged-headers-hint">
-              实际发送 Headers：{Object.entries(mergedHeaders).map(([k, v]) => `${k}: ${v}`).join(' · ')}
-            </p>
-          )}
         </div>
       )}
 
@@ -458,12 +486,12 @@ export default function ClientApiEditor({
               checked={useProjectCookies}
               onChange={(e) => patch((a) => { a.useProjectCookies = e.target.checked; })}
             />
-            <span>启用项目 Cookies</span>
+            <span>继承环境与服务 Cookies</span>
           </label>
+          {nodePortEnabled && <p className="hint section-hint">已跳过环境 Cookies</p>}
           {useProjectCookies && projectCookieRows.some((r) => r.key.trim()) && (
             <section className="inherited-headers">
-              <h4>项目 Cookies</h4>
-              <p className="hint section-hint">继承自项目设置，接口级同名 Cookie 可覆盖</p>
+              <h4>继承的 Cookies</h4>
               <div className="kv-readonly">
                 <div className="kv-head">
                   <span>Name</span>
@@ -479,8 +507,7 @@ export default function ClientApiEditor({
             </section>
           )}
           <section>
-            <h4>Cookies</h4>
-            <p className="hint section-hint">以 Cookie 请求头发送，支持多个 name/value 项。</p>
+            {projectCookieRows.some((row) => row.key.trim()) && <h4>API Cookies</h4>}
             <KVEditor
               resetKey={`${clientApi.id}-cookies`}
               rows={cookieRows}
@@ -493,74 +520,96 @@ export default function ClientApiEditor({
         </div>
       )}
 
-      {tab === 'body' && (
-        <div className="panel fill-panel http-request-body">
-          <div className="grpc-body-grid http-body-grid">
-            <section className="grpc-schema-panel http-schema-panel">
-              <div className="grpc-body-pane-head">
-                <strong>请求参数结构</strong>
-                <code>{requestSchema.typeName || requestSchema.language}</code>
-              </div>
-              <div className="http-schema-toolbar">
+      {tab === 'schema' && (
+        <div className="panel fill-panel editor-schema-panel">
+          <section className="grpc-schema-panel http-schema-panel">
+            <div className="grpc-body-pane-head">
+              <strong>请求参数结构</strong>
+              <code>{requestSchema.typeName || requestSchema.language}</code>
+            </div>
+            <div className="http-schema-toolbar">
+              <select
+                className="field"
+                aria-label="结构代码语言"
+                value={clientApi.requestSchemaLanguage || 'auto'}
+                onChange={(event) => patch((a) => {
+                  a.requestSchemaLanguage = event.target.value;
+                  a.requestSchemaRoot = undefined;
+                })}
+              >
+                <option value="auto">自动识别</option>
+                <option value="go">Go</option>
+                <option value="javascript">JavaScript</option>
+                <option value="typescript">TypeScript</option>
+                <option value="python">Python</option>
+                <option value="java">Java</option>
+                <option value="json">JSON</option>
+              </select>
+              {requestSchema.availableTypes.length > 1 && (
                 <select
                   className="field"
-                  aria-label="结构代码语言"
-                  value={clientApi.requestSchemaLanguage || 'auto'}
-                  onChange={(event) => patch((a) => {
-                    a.requestSchemaLanguage = event.target.value;
-                    a.requestSchemaRoot = undefined;
-                  })}
+                  aria-label="根类型"
+                  value={requestSchema.typeName}
+                  onChange={(event) => patch((a) => { a.requestSchemaRoot = event.target.value; })}
                 >
-                  <option value="auto">自动识别</option>
-                  <option value="go">Go</option>
-                  <option value="javascript">JavaScript</option>
-                  <option value="typescript">TypeScript</option>
-                  <option value="python">Python</option>
-                  <option value="java">Java</option>
-                  <option value="json">JSON</option>
+                  {requestSchema.availableTypes.map((typeName) => (
+                    <option value={typeName} key={typeName}>{typeName}</option>
+                  ))}
                 </select>
-                {requestSchema.availableTypes.length > 1 && (
-                  <select
-                    className="field"
-                    aria-label="根类型"
-                    value={requestSchema.typeName}
-                    onChange={(event) => patch((a) => { a.requestSchemaRoot = event.target.value; })}
-                  >
-                    {requestSchema.availableTypes.map((typeName) => (
-                      <option value={typeName} key={typeName}>{typeName}</option>
-                    ))}
-                  </select>
-                )}
-                <div className="mini-tabs http-schema-tabs">
-                  <button type="button" className={schemaView === 'source' ? 'active' : ''} onClick={() => setSchemaView('source')}>源码</button>
-                  <button type="button" className={schemaView === 'structure' ? 'active' : ''} onClick={() => setSchemaView('structure')}>结构</button>
-                </div>
-                <button type="button" className="ghost sm" onClick={inferSchemaFromBody}>从 Body</button>
-              </div>
-              {schemaView === 'source' ? (
-                <textarea
-                  className="http-schema-source"
-                  value={clientApi.requestSchemaSource || ''}
-                  spellCheck={false}
-                  placeholder="粘贴 Go struct、JavaScript 对象、TypeScript interface、Python dataclass/Pydantic、Java class 或 JSON"
-                  onChange={(event) => patch((a) => {
-                    a.requestSchemaSource = event.target.value;
-                    a.requestSchemaRoot = undefined;
-                  })}
-                />
-              ) : requestSchema.error ? (
-                <div className="http-schema-message error">{requestSchema.error}</div>
-              ) : requestSchema.fields.length ? (
-                <div className="grpc-schema-tree">
-                  <SchemaFieldRows fields={requestSchema.fields} />
-                </div>
-              ) : (
-                <div className="http-schema-message">请先粘贴代码结构，或从当前 Body 推断。</div>
               )}
-            </section>
-            <section className="grpc-request-json-panel">
+              <div className="mini-tabs http-schema-tabs">
+                <button type="button" className={schemaView === 'source' ? 'active' : ''} onClick={() => setSchemaView('source')}>源码</button>
+                <button type="button" className={schemaView === 'structure' ? 'active' : ''} onClick={() => setSchemaView('structure')}>预览</button>
+              </div>
+              <button type="button" className="ghost sm" onClick={inferSchemaFromBody}>从 Body</button>
+            </div>
+            {schemaView === 'source' ? (
+              <textarea
+                className="http-schema-source"
+                aria-label="参数结构源码"
+                value={clientApi.requestSchemaSource || ''}
+                spellCheck={false}
+                placeholder="粘贴类型定义或 JSON"
+                onChange={(event) => patch((a) => {
+                  a.requestSchemaSource = event.target.value;
+                  a.requestSchemaRoot = undefined;
+                })}
+              />
+            ) : requestSchema.error ? (
+              <div className="http-schema-message error">{requestSchema.error}</div>
+            ) : requestSchema.fields.length ? (
+              <div className="grpc-schema-tree">
+                <SchemaFieldRows fields={requestSchema.fields} />
+              </div>
+            ) : (
+              <div className="http-schema-message">暂无结构</div>
+            )}
+          </section>
+        </div>
+      )}
+
+      {tab === 'body' && (
+        <div className="panel fill-panel http-request-body">
+          <div className="file-body-controls">
+            <label>Body 类型
+              <select className="field" value={bodyType} onChange={(e) => patch((a) => { a.bodyType = e.target.value; })}>
+                <option value="text">文本</option>
+                <option value="multipart">文件上传 (multipart/form-data)</option>
+                <option value="binary">文件上传 (二进制)</option>
+              </select>
+            </label>
+            {bodyType !== 'text' && <>
+              {bodyType === 'multipart' && <label>文件字段名
+                <input className="field" value={clientApi.fileFieldName || 'file'} onChange={(e) => patch((a) => { a.fileFieldName = e.target.value; })} />
+              </label>}
+              <label>选择文件 <input type="file" key={clientApi.id} onChange={(e) => setUploadFile(e.target.files?.[0] || null)} /></label>
+              {uploadFile && <span className="hint">{uploadFile.name} ({uploadFile.size} 字节)</span>}
+            </>}
+          </div>
+          {bodyType !== 'binary' && (
+            <section className="grpc-request-json-panel editor-body-panel">
               <div className="body-toolbar grpc-body-json-toolbar">
-                <strong>请求 Body</strong>
+                {bodyType === 'multipart' && <strong>附加字段</strong>}
                 <BodyPresetToolbar
                   presets={clientApi.bodyPresets}
                   body={clientApi.body}
@@ -571,52 +620,48 @@ export default function ClientApiEditor({
                 <div className="grpc-body-actions">
                   <button type="button" className="ghost sm" disabled={!requestSchema.fields.length} onClick={generateBodyFromSchema}>生成示例</button>
                   <button type="button" className="ghost sm" onClick={formatBodyJson}>格式化</button>
-                  <label className="body-get-switch" title="GET 请求携带 Body">
+                  {clientApi.method?.toUpperCase() === 'GET' && <label className="body-get-switch">
                     <input
                       type="checkbox"
                       checked={clientApi.allowGetBody === true}
                       onChange={(e) => patch((a) => { a.allowGetBody = e.target.checked; })}
                     />
                     <span>GET Body</span>
-                  </label>
+                  </label>}
                 </div>
               </div>
               <textarea
                 className="code-input fill"
+                aria-label={bodyType === 'multipart' ? '附加字段' : '请求 Body'}
                 value={clientApi.body ?? ''}
                 spellCheck={false}
                 onChange={(e) => patch((a) => { a.body = e.target.value; })}
               />
             </section>
-          </div>
+          )}
         </div>
       )}
       {tab === "setting" && (
         <div className="panel settings-panel">
           <section>
-            <h4>Request Settings</h4>
-            <label className="inherit-switch setting-option" title="Uses HTTP_PROXY, HTTPS_PROXY and NO_PROXY from the server environment">
+            <label className="inherit-switch setting-option">
               <input
                 type="checkbox"
-                checked={clientApi.proxy === true}
+                checked={!nodePortEnabled && clientApi.proxy === true}
+                disabled={nodePortEnabled}
                 onChange={(e) => patch((a) => { a.proxy = e.target.checked; })}
               />
-              <span>Proxy</span>
+              <span>使用服务端代理</span>
             </label>
-            <p className="hint setting-hint">
-              {clientApi.proxy === true ? "Uses the server proxy environment" : "Direct connection; proxy disabled by default"}
-            </p>
-            <label className="inherit-switch setting-option" title="Disables TLS certificate verification for this API">
+            {nodePortEnabled && <p className="hint setting-hint">NodePort 直连已停用代理</p>}
+            <label className="inherit-switch setting-option">
               <input
                 type="checkbox"
                 checked={clientApi.insecureTls === true}
                 onChange={(e) => patch((a) => { a.insecureTls = e.target.checked; })}
               />
-              <span>Skip TLS verify</span>
+              <span>跳过 TLS 证书校验</span>
             </label>
-            <p className="hint setting-hint">
-              {clientApi.insecureTls === true ? "TLS certificate verification is disabled" : "TLS certificate verification is enabled by default"}
-            </p>
           </section>
         </div>
       )}
@@ -625,40 +670,11 @@ export default function ClientApiEditor({
 
   const rightPanel = rightTab === 'request' ? (
     <div className="side-panel">
-      <div className="request-meta">
-        <span className="hint">环境：{activeEnvName}</span>
-        <span className="hint">{(clientApi.method || 'POST').toUpperCase()}</span>
-      </div>
-      {pathParamNames.length > 0 && (
-        <div className="request-params">
-          <span className="hint">路径参数</span>
-          {pathParamNames.map((name) => (
-            <span key={name} className="param-chip" title={clientApi.pathParamDescriptions?.[name]}>
-              {name}={clientApi.pathParams?.[name] ?? ''}
-              {clientApi.pathParamDescriptions?.[name] && (
-                <em className="param-chip-desc">{clientApi.pathParamDescriptions[name]}</em>
-              )}
-            </span>
-          ))}
-        </div>
-      )}
-      {Object.keys(effectiveQueryParams || {}).length > 0 && (
-        <div className="request-params">
-          <span className="hint">Query</span>
-          {Object.entries(effectiveQueryParams).map(([key, value]) => (
-            <span key={key} className="param-chip" title={clientApi.queryParamDescriptions?.[key]}>
-              {key}={value}
-              {clientApi.queryParamDescriptions?.[key] && (
-                <em className="param-chip-desc">{clientApi.queryParamDescriptions[key]}</em>
-              )}
-            </span>
-          ))}
-        </div>
-      )}
       <div className="request-format-toolbar">
         <div className="request-format-tabs">
           <button
             type="button"
+            aria-pressed={requestFormat === 'curl'}
             className={requestFormat === 'curl' ? 'active' : ''}
             onClick={() => setRequestFormat('curl')}
           >
@@ -666,6 +682,7 @@ export default function ClientApiEditor({
           </button>
           <button
             type="button"
+            aria-pressed={requestFormat === 'rest'}
             className={requestFormat === 'rest' ? 'active' : ''}
             onClick={() => setRequestFormat('rest')}
           >
@@ -675,9 +692,10 @@ export default function ClientApiEditor({
         <button
           type="button"
           className="ghost copy-curl-btn"
+          disabled={!resolvedUrl}
           onClick={() => navigator.clipboard.writeText(requestText)}
         >
-          复制{requestFormat === 'curl' ? ' curl' : ' REST'}
+          复制
         </button>
       </div>
       <pre className="code-block fill">{requestText}</pre>
@@ -686,15 +704,16 @@ export default function ClientApiEditor({
     <div className="side-panel">
       {sendError && <div className="alert error">{sendError}</div>}
       {!sendResult && !sendError && (
-        <div className="record-empty side-empty">点击「发送」执行请求，响应将显示在这里</div>
+        <div className="record-empty side-empty">暂无响应</div>
       )}
       {sendResult && (
         <>
           <div className="response-meta">
             <span className={`detail-status ${statusClass(sendResult.status)}`}>{sendResult.status}</span>
             <span className="hint">{formatDuration(sendResult.durationMs)}</span>
+            {sendResult.download && <button type="button" className="ghost sm" onClick={() => downloadResponse(sendResult)}>下载文件</button>}
           </div>
-          <pre className="code-block fill">{prettyJson(sendResult.body) || sendResult.body || '(empty)'}</pre>
+          {!sendResult.download && <pre className="code-block fill">{prettyJson(sendResult.body) || sendResult.body || '空响应'}</pre>}
         </>
       )}
     </div>
@@ -721,142 +740,39 @@ export default function ClientApiEditor({
 
   return (
     <div className="editor-page">
-      <div className="editor-head">
-        <div className="editor-title">
+      <div className="url-bar">
+        <div className="request-line">
+          <select
+            className="method-select"
+            aria-label="请求方法"
+            value={(clientApi.method || 'POST').toUpperCase()}
+            onChange={(e) => patch((a) => { a.method = e.target.value; })}
+          >
+            {HTTP_METHODS.map((m) => <option key={m} value={m}>{m}</option>)}
+          </select>
+          <RequestAddress address={requestOrigin(resolvedUrl)} />
           <input
-            className="title-input"
-            value={clientApi.name}
-            placeholder="API 名称"
-            onChange={(e) => patch((a) => { a.name = e.target.value; })}
+            className="url-input"
+            aria-label="请求路径"
+            value={clientApi.url || ''}
+            placeholder="/api/path/:id"
+            onChange={(e) => updateUrl(e.target.value)}
           />
         </div>
-        <div className="env-toolbar">
-        <div className="env-summary">
-          <span>环境</span>
-          <strong>{activeEnvName}</strong>
-          {activeEnvHost && <code>{activeEnvHost}</code>}
-        </div>
-        <div className="env-controls">
-          <div className="env-picker" ref={envPickerRef}>
-            <button
-              type="button"
-              className={`env-picker-trigger ${envMenuOpen ? 'active' : ''}`}
-              onClick={() => setEnvMenuOpen((value) => !value)}
-              aria-haspopup="listbox"
-              aria-expanded={envMenuOpen}
-            >
-              <span className="env-picker-title">{activeEnvName}</span>
-              {activeEnvHost && <span className="env-picker-host">{activeEnvHost}</span>}
-              <span className="env-picker-caret">⌄</span>
-            </button>
-            {envMenuOpen && (
-              <div className="env-picker-menu" role="listbox">
-                {(environments || []).map((env) => {
-                  const selected = env.id === (activeEnvironmentId || environments?.[0]?.id);
-                  return (
-                    <button
-                      key={env.id}
-                      type="button"
-                      className={`env-picker-option ${selected ? 'selected' : ''}`}
-                      role="option"
-                      aria-selected={selected}
-                      onClick={() => {
-                        onProjectPatch((d) => { d.activeEnvironmentId = env.id; });
-                        setEnvMenuOpen(false);
-                      }}
-                    >
-                      <span>{env.name || '未命名环境'}</span>
-                      <code>{env.host}</code>
-                    </button>
-                  );
-                })}
-              </div>
-            )}
-          </div>
-          <button
-            type="button"
-            className={`ghost env-edit-btn ${showEnvEditor ? 'active' : ''}`}
-            onClick={() => setShowEnvEditor((v) => !v)}
-            title="管理环境"
-          >
-            管理环境
-          </button>
-        </div>
-      </div>
-      </div>
-
-      <div className="url-bar">
-        <select
-          className="method-select"
-          value={(clientApi.method || 'POST').toUpperCase()}
-          onChange={(e) => patch((a) => { a.method = e.target.value; })}
-        >
-          {HTTP_METHODS.map((m) => <option key={m} value={m}>{m}</option>)}
-        </select>
-        <input
-          className="url-input"
-          value={clientApi.url || ''}
-          placeholder="/api/path/:id"
-          onChange={(e) => updateUrl(e.target.value)}
-        />
+        <ServiceConnection compact project={project} environments={environments} onChange={onProjectPatch} />
         <div className="url-actions">
-          <button type="button" className="primary" onClick={handleSend} disabled={sending || busy}>
+          <button type="button" className="primary" onClick={handleSend} disabled={sending || busy || !resolvedUrl}>
             {sending ? '发送中…' : '发送'}
           </button>
           <button type="button" className="ghost" onClick={onSave} disabled={busy}>保存</button>
-          <button type="button" className="ghost danger" onClick={onRemove}>删除</button>
+          <Dropdown trigger={<Icon name="more" />} label="接口操作" items={actions} disabled={busy} />
         </div>
       </div>
-
-      {showEnvEditor && (
-        <EnvironmentManager
-          compact
-          resetKey={projectResetKey}
-          environments={environments}
-          activeEnvironmentId={activeEnvironmentId}
-          onEnvironmentsChange={(envs) => onProjectPatch((d) => {
-            d.environments = envs;
-            if (!envs.some((env) => env.id === d.activeEnvironmentId)) {
-              d.activeEnvironmentId = envs[0]?.id;
-            }
-          })}
-          onActiveEnvironmentChange={(id) => onProjectPatch((d) => { d.activeEnvironmentId = id; })}
-        />
-      )}
-
-      {pathParamNames.length > 0 && (
-        <div className="path-params">
-          <span className="path-params-label">路径参数</span>
-          <div className="param-fields">
-            <div className="param-fields-head">
-              <span>参数名</span>
-              <span>参数值</span>
-              <span>说明</span>
-            </div>
-            {pathParamNames.map((name) => (
-              <div className="param-fields-row" key={name}>
-                <span className="param-name">{name}</span>
-                <input
-                  value={clientApi.pathParams?.[name] ?? ''}
-                  placeholder={`${name}`}
-                  onChange={(e) => updatePathParam(name, e.target.value)}
-                />
-                <input
-                  className="desc-input"
-                  value={clientApi.pathParamDescriptions?.[name] ?? ''}
-                  placeholder={`${name}`}
-                  onChange={(e) => updatePathParamDescription(name, e.target.value)}
-                />
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
 
       <SplitPane
         className="editor-split"
         rightHeader={rightHeader}
-        initialRightWidth={400}
+        rightFraction={0.43}
         minLeft={360}
         minRight={300}
         left={leftPanel}

@@ -15,6 +15,13 @@ async function request(path, options = {}) {
 }
 
 export const api = {
+  listEnvironments: () => request('/environments'),
+  getEnvironmentLayout: () => request('/environment-layout'),
+  saveEnvironmentLayout: (snapshot) => request('/environment-layout', { method: 'PUT', body: JSON.stringify(snapshot) }),
+  saveEnvironment: (environment) => environment.id
+    ? request(`/environments/${encodeURIComponent(environment.id)}`, { method: 'PUT', body: JSON.stringify(environment) })
+    : request('/environments', { method: 'POST', body: JSON.stringify(environment) }),
+  deleteEnvironment: (id) => request(`/environments/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   listProjects: () => request('/projects'),
   getProject: (id) => request(`/projects/${id}`),
   saveProject: (project) =>
@@ -76,7 +83,7 @@ export function subscribeEvents(onEvent, onStatus) {
     };
 
     es.onmessage = (e) => onEvent('message', JSON.parse(e.data));
-    for (const name of ['request', 'projects', 'connected', 'requests_cleared']) {
+    for (const name of ['request', 'projects', 'environments', 'connected', 'requests_cleared']) {
       es.addEventListener(name, (e) => {
         onEvent(name, JSON.parse(e.data));
         if (name === 'connected') onStatus?.(true);

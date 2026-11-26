@@ -112,10 +112,7 @@ export default function ProtoManager({ draft, onChange, onSave, onDelete, onClos
   return (
     <div className="proto-manager">
       <header className="settings-head proto-manager-head">
-        <div>
-          <h2>Proto 管理</h2>
-          <p className="settings-sub">项目内统一存放 Proto，gRPC Server 和 Client 方法通过引用关联。</p>
-        </div>
+        <h2>Proto 管理</h2>
         <div className="btn-row">
           <button type="button" className="ghost" onClick={onClose}>返回</button>
           <button type="button" className="primary" disabled={busy} onClick={onSave}>保存</button>
@@ -125,7 +122,6 @@ export default function ProtoManager({ draft, onChange, onSave, onDelete, onClos
       <div className="proto-manager-layout">
         <aside className="proto-library">
           <div className="proto-library-head">
-            <strong>Proto 文件</strong>
             <div className="btn-row">
               <label className="ghost sm file-btn">
                 导入
@@ -149,7 +145,8 @@ export default function ProtoManager({ draft, onChange, onSave, onDelete, onClos
                   onClick={() => setSelectedId(proto.id)}
                 >
                   <span>{proto.name || proto.filename}</span>
-                  <small>{proto.filename || 'service.proto'} · {references} 个方法</small>
+                  {proto.name && proto.name !== proto.filename && <small>{proto.filename || 'service.proto'}</small>}
+                  {references > 0 && <small>{references} 处引用</small>}
                 </button>
               );
             }) : (
@@ -170,15 +167,14 @@ export default function ProtoManager({ draft, onChange, onSave, onDelete, onClos
                   <span>文件名</span>
                   <input value={selected.filename || ''} onChange={(event) => patchSelected((proto) => { proto.filename = event.target.value; })} />
                 </label>
-                <span className={'grpc-parse-state ' + (parsing ? 'busy' : '')}>
-                  {parsing ? '解析中…' : error ? '解析失败' : `已解析 ${services.length} 个 Service`}
-                </span>
+                {parsing && <span className="grpc-parse-state busy" role="status">解析中…</span>}
                 <button type="button" className="ghost danger sm" onClick={() => onDelete(selected.id)}>删除</button>
               </div>
               {error && <div className="grpc-error proto-manager-error">{error}</div>}
               <div className="proto-editor-grid">
                 <textarea
                   className="code-input fill proto-source-editor"
+                  aria-label="Proto 源码"
                   value={selected.content || ''}
                   spellCheck={false}
                   placeholder="粘贴或编写 Proto 内容"
@@ -199,16 +195,11 @@ export default function ProtoManager({ draft, onChange, onSave, onDelete, onClos
                         </div>
                       ))}
                     </section>
-                  )) : <div className="record-empty">当前 Proto 中没有可用方法</div>}
+                  )) : <div className="record-empty">暂无方法</div>}
                 </div>
               </div>
             </>
-          ) : (
-            <div className="placeholder">
-              <p>导入、粘贴或新建一个 Proto</p>
-              <button type="button" className="primary" onClick={createProto}>新建 Proto</button>
-            </div>
-          )}
+          ) : protos.length > 0 && <div className="placeholder">请选择 Proto</div>}
         </main>
       </div>
     </div>

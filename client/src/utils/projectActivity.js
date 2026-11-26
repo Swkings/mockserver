@@ -54,6 +54,9 @@ export function removeProjectActivity(projectId, storage) {
 
 export function resolveProjectActivity(project, activity = {}) {
   const requestedType = Object.hasOwn(ITEM_KEYS, activity?.type) ? activity.type : 'api';
+  if (activity?.location === 'empty' && !project?.[ITEM_KEYS[requestedType]]?.length) {
+    return { type: requestedType, itemId: null, location: 'empty', mainView: 'edit' };
+  }
   const typeOrder = [requestedType, ...DEFAULT_TYPE_ORDER.filter((type) => type !== requestedType)];
 
   let type = requestedType;
